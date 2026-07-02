@@ -305,6 +305,27 @@ async function handleCommand(command, tg, engine, state) {
       return tg.notify('🎁 All free rewards claimed (hold gems, epoch, dex, afk, daily, idle).', menuMarkup);
     }
 
+    case '/afk': {
+      // Manual: enter the AFK zone so creatures keep farming gold + stamina passively
+      // while the PC/bot is offline. Banks any pending rewards first, then (re)starts
+      // the session. (The autopilot also keeps the AFK zone active — this is an explicit
+      // "I'm going offline now" convenience.)
+      const collect = await client.afkCollect(false).catch(() => null); // bank + keep running
+      const banked = Number(collect?.afkCollected || 0);
+      const stamina = Number(collect?.afkStamina || 0);
+      const start = await client.afkStart().catch((e) => ({ error: e.message }));
+      if (start?.error && !collect) return tg.notify(`💤 AFK failed: <code>${esc(start.error)}</code>`, menuMarkup);
+      state.count('afk:manual'); state.save();
+      return tg.notify([
+        '💤 <b>AFK ZONE ACTIVE</b>',
+        '━━━━━━━━━━━━━━━━━━━━',
+        banked > 0 || stamina > 0 ? `🪙 Banked: <b>${esc(banked.toLocaleString('en-US'))}</b> gold · ⚡ <b>${esc(String(stamina))}</b> stamina` : '',
+        'Your creatures now farm <b>gold + stamina</b> passively.',
+        '✅ Safe to turn off your PC — rewards accumulate while offline (up to the game cap).',
+        'Back online? Tap <code>/claim</code> to collect.',
+      ].filter(Boolean).join('\n'), menuMarkup);
+    }
+
     case '/slot': {
       const res = await client.buyPlaceSlot().catch((e) => ({ error: e.message }));
       if (res?.error) return tg.notify(`➕ Slot failed: <code>${res.error}</code>`, menuMarkup);

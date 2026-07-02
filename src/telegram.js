@@ -108,7 +108,10 @@ export class TelegramBot {
         ],
         [
           { text: '🎁 Claim All', callback_data: '/claim' },
+          { text: '💤 AFK', callback_data: '/afk' },
           { text: '📜 Quests', callback_data: '/quests' },
+        ],
+        [
           { text: '🧬 Breed', callback_data: '/breed' },
         ],
         [
@@ -215,6 +218,7 @@ export class TelegramBot {
       { command: 'quests', description: '📜 Claim all quests (+account XP)' },
       { command: 'daily', description: '🎁 Claim daily reward' },
       { command: 'claim', description: '🎁 Claim all free rewards' },
+      { command: 'afk', description: '💤 Enter AFK zone before going offline' },
       { command: 'slot', description: '➕ Buy a new plot slot' },
       { command: 'buyegg', description: '🥚 Buy egg (default basic)' },
       { command: 'gacha', description: '🎰 Gacha pull (tier currency)' },
