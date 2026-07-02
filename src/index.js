@@ -1,0 +1,574 @@
+import { setTimeout as sleep } from 'node:timers/promises';
+import fs from 'node:fs';
+import { config } from './config.js';
+import { logger } from './logger.js';
+import { generateWallet, loadWallet } from './wallet.js';
+import { ZolanaClient } from './client.js';
+import { BotState } from './state.js';
+import { StrategyEngine } from './strategy.js';
+import { TelegramBot, formatGachaCards } from './telegram.js';
+
+async function main() {
+  const once = process.argv.includes('--once');
+  const wallet = loadWallet();
+  const client = new ZolanaClient(wallet);
+  const state = BotState.load();
+  const engine = new StrategyEngine(client, state);
+  const telegram = new TelegramBot(state);
+
+  logger.info({
+    wallet: wallet.publicKey,
+    realRun: config.ZOLANA_REAL_RUN,
+    loopMs: config.ZOLANA_LOOP_MS,
+  }, 'zolana bot started');
+  await telegram.registerCommands();
+  await telegram.notify(telegram.menuText(), { reply_markup: telegram.mainKeyboard() });
+
+  // The strategy cycle runs on its own schedule (ZOLANA_LOOP_MS), while Telegram
+  // is long-polled continuously so buttons/commands respond within ~1s instead of
+  // waiting for the next cycle. `state.data.runCycleNow` lets a command force a run.
+  let nextCycleAt = 0;
+  let consecutiveErrors = 0;
+  do {
+    try {
+      const due = Date.now() >= nextCycleAt || state.data.runCycleNow;
+      if (!state.data.paused && due) {
+        state.data.runCycleNow = false;
+        await engine.cycle();
+        consecutiveErrors = 0;
+        // Randomize the next cycle so we never fire on a robotic fixed clock.
+        const jitter = Math.floor((Math.random() - 0.5) * 2 * config.ZOLANA_LOOP_JITTER_MS);
+        nextCycleAt = Date.now() + config.ZOLANA_LOOP_MS + jitter;
+        await drainNotifications(telegram, state);
+      }
+    } catch (error) {
+      // Exponential backoff on repeated failures (network/Cloudflare/rate-limit) so a
+      // sustained outage can't hammer the server or spam alerts — resilient, not brittle.
+      consecutiveErrors += 1;
+      const backoff = Math.min(30 * 60_000, 60_000 * (2 ** (consecutiveErrors - 1)));
+      logger.error({ status: error.status, message: error.message, consecutiveErrors, backoffMs: backoff }, 'cycle failed');
+      if (consecutiveErrors <= 3 || consecutiveErrors % 5 === 0) {
+        await telegram.notify(`⚠️ <b>Zolana bot</b> cycle error (#${consecutiveErrors})\n<code>${esc(error.message)}</code>\nRetry in ${Math.round(backoff / 60000)}m.`).catch(() => {});
+      }
+      nextCycleAt = Date.now() + backoff;
+      try { state.save(); } catch { /* keep looping */ }
+    }
+
+    if (once) break;
+
+    // Never let a Telegram hiccup kill the loop.
+    const didPoll = await telegram.poll((command, bot) => handleCommand(command, bot, engine, state)).catch(() => false);
+    if (!didPoll) await sleep(3000);
+  } while (true);
+}
+
+const AUTO_KEYS = new Set(['afk', 'claims', 'quests', 'dungeon', 'evolve', 'breed', 'gacha', 'premiumEgg', 'gemcraft', 'relic', 'relicEnhance', 'companion', 'epoch', 'pvp', 'slots', 'marketBuy', 'marketSell']);
+const AUTO_DEFAULTS = {
+  afk: config.ZOLANA_AUTO_AFK,
+  claims: config.ZOLANA_AUTO_CLAIMS,
+  quests: config.ZOLANA_AUTO_QUESTS,
+  dungeon: config.ZOLANA_AUTO_DUNGEON,
+  evolve: config.ZOLANA_AUTO_EVOLVE,
+  breed: config.ZOLANA_AUTO_BREED,
+  gacha: config.ZOLANA_AUTO_GACHA,
+  premiumEgg: config.ZOLANA_AUTO_PREMIUM_EGG,
+  gemcraft: config.ZOLANA_AUTO_GEMCRAFT,
+  relic: config.ZOLANA_AUTO_RELIC,
+  relicEnhance: config.ZOLANA_AUTO_RELIC_ENHANCE,
+  companion: config.ZOLANA_AUTO_COMPANION,
+  epoch: config.ZOLANA_AUTO_EPOCH,
+  pvp: config.ZOLANA_AUTO_PVP,
+  slots: config.ZOLANA_AUTO_SLOTS,
+  marketBuy: config.ZOLANA_AUTO_MARKET_BUY,
+  marketSell: config.ZOLANA_AUTO_MARKET_SELL,
+};
+
+const GACHA_TIER_ALIASES = {
+  basic: 'standard',
+  standard: 'standard',
+  deluxe: 'deluxe',
+};
+
+const GACHA_TIER_COSTS = {
+  standard: 8,
+  deluxe: 15,
+};
+
+function normalizeGachaTier(value = 'standard') {
+  return GACHA_TIER_ALIASES[String(value).toLowerCase()] || null;
+}
+
+async function handleCommand(command, tg, engine, state) {
+  const [name, ...args] = command.split(/\s+/);
+  const client = engine.client;
+  const menuMarkup = { reply_markup: tg.mainKeyboard() };
+
+  // Manual commands always get a fresh action budget — otherwise a full autopilot
+  // cycle can exhaust the per-cycle cap and silently drop button-triggered actions.
+  engine.actionsThisCycle = 0;
+  // Ensure we have a valid session before hitting any game endpoint on demand.
+  await client.ensureLogin().catch(() => {});
+
+  switch (name) {
+    case '/start':
+    case '/commands':
+    case '/help':
+      return tg.notify(tg.menuText(), menuMarkup);
+
+    case '/status':
+      return tg.notify(tg.formatStatus(state.data.lastPlayer, state.data.market), menuMarkup);
+
+    case '/market':
+      return tg.notify(tg.formatStatus(state.data.lastPlayer, state.data.market), menuMarkup);
+
+    case '/wallet': {
+      const sol = await client.wallet.solBalance().catch(() => 0);
+      let token = null;
+      try { token = await client.wallet.tokenBalance(); } catch { /* no ata yet */ }
+      const price = Number(state.data.profit?.zolanaPriceUsd) || null;
+      return tg.notify(tg.formatWallet(sol, token, price), menuMarkup);
+    }
+
+    case '/profit':
+      return tg.notify(tg.formatProfit(), menuMarkup);
+
+    case '/stats':
+      return tg.notify(tg.formatStats(), menuMarkup);
+
+    case '/once':
+      await tg.notify('▶️ Running one cycle…');
+      await engine.cycle();
+      return tg.notify(tg.formatStatus(state.data.lastPlayer, state.data.market), menuMarkup);
+
+    case '/pause':
+      state.data.paused = true; state.save();
+      return tg.notify('⏸ Autopilot <b>paused</b>.', menuMarkup);
+
+    case '/resume':
+      state.data.paused = false;
+      state.data.runCycleNow = true; // kick a cycle immediately on resume
+      state.save();
+      return tg.notify('✅ Autopilot <b>resumed</b> — running a cycle now.', menuMarkup);
+
+    case '/daily': {
+      const res = await client.claimDaily().catch((e) => ({ error: e.message }));
+      state.count('daily');
+      if (res?.error) return tg.notify(`🎁 Daily: <code>${esc(res.error)}</code>`, menuMarkup);
+      state.cooldown('daily', 23 * 60 * 60 * 1000); state.save();
+      return tg.notify('🎁 <b>Daily reward claimed!</b>', menuMarkup);
+    }
+
+    case '/auto':
+      return tg.notify('⚙️ <b>Autopilot panel</b>\nTap to toggle each module on/off:', {
+        reply_markup: tg.autoKeyboard(engine),
+      });
+
+    case '/toggle': {
+      const key = args[0];
+      if (!AUTO_KEYS.has(key)) return tg.notify('Unknown toggle.');
+      const current = engine.toggle(key, AUTO_DEFAULTS[key]);
+      engine.setToggle(key, !current);
+      return tg.notify(`⚙️ <b>${key}</b> → ${!current ? '🟢 ON' : '🔴 OFF'}`, {
+        reply_markup: tg.autoKeyboard(engine),
+      });
+    }
+
+    case '/pvp': {
+      await tg.notify('⚔️ Finding a PvP opponent…');
+      const res = await client.pvpMatch().catch((e) => ({ error: e.message }));
+      const pvp = res?.pvp || res;
+      if (res?.error) return tg.notify(`⚔️ PvP failed: <code>${res.error}</code>`, menuMarkup);
+      const won = pvp?.result === 'win' || pvp?.won === true;
+      return tg.notify(`⚔️ <b>PvP ${won ? '🏆 WON' : 'done'}</b>\n<code>${esc(JSON.stringify(pvp).slice(0, 300))}</code>`, menuMarkup);
+    }
+
+    case '/dungeon': {
+      const player = await client.loadPlayer().catch(() => null);
+      await engine.dungeonRun(player);
+      return tg.notify('🏰 Dungeon: start/claim processed (see /stats).', menuMarkup);
+    }
+
+    case '/evolve': {
+      const player = await client.loadPlayer().catch(() => null);
+      state.data.cooldowns.evolve = 0;
+      await engine.evolveBest(player);
+      return tg.notify('🧬 Evolving all eligible creatures (advanced-first, within gold budget).', menuMarkup);
+    }
+
+    case '/quests': {
+      const player = await client.loadPlayer().catch(() => null);
+      state.data.cooldowns.quests = 0;
+      await engine.claimQuests(player);
+      return tg.notify('📜 Claimed all completed quests (+150 account XP each).', menuMarkup);
+    }
+
+    case '/breed': {
+      const player = await client.loadPlayer().catch(() => null);
+      state.data.cooldowns.breed = 0;
+      await engine.breedForRarity(player);
+      return tg.notify('🧬 Breeding the 2 strongest Adult/Elder creatures (chance of higher rarity → Legendary/Mythical).', menuMarkup);
+    }
+
+    case '/relic': {
+      const player = await client.loadPlayer().catch(() => null);
+      state.data.cooldowns.relic = 0;
+      await engine.relicAutopilot(player);
+      const owned = Array.isArray(player?.relics) ? player.relics.length : 0;
+      return tg.notify(`💍 Relic processed (craft+equip). Owned: <b>${owned}</b>. Unlocks d_equip (+150 XP/day) & w_relics quests.`, menuMarkup);
+    }
+
+    case '/epoch': {
+      const player = await client.loadPlayer().catch(() => null);
+      state.data.cooldowns.epoch = 0;
+      await engine.epochAutopilot(player);
+      const e = await client.epoch().catch(() => null);
+      const st = e?.epoch?.status || '-';
+      return tg.notify(`🌌 Epoch processed. Status: <b>${esc(st)}</b> (donation only runs during the funding phase → $ZOLANA rebate).`, menuMarkup);
+    }
+
+    case '/companion': {
+      const player = await client.loadPlayer().catch(() => null);
+      state.data.cooldowns.companion = 0;
+      await engine.companionAutopilot(player);
+      return tg.notify('🐾 Companion set to the strongest creature (buffs whole-party raid & PvP power → higher dungeon floors).', menuMarkup);
+    }
+
+    case '/gemcraft': {
+      const player = await client.loadPlayer().catch(() => null);
+      state.data.cooldowns.gemcraft = 0;
+      await engine.gemCraftAuto(player);
+      const cat = (player?.materials || []).find((m) => m.material_id === 'gem_catalyst');
+      return tg.notify(`💠 Gem craft processed (needs 5 gem_catalyst from dungeon floor 2+). Have: <b>${esc(cat?.quantity ?? 0)}</b>.`, menuMarkup);
+    }
+
+    case '/inventory':
+    case '/backpack': {
+      const data = await client.loadPlayer().catch((e) => ({ error: e.message }));
+      if (data?.error) return tg.notify(`🎒 Failed to load: <code>${esc(data.error)}</code>`, menuMarkup);
+      return tg.notify(tg.formatInventory(data), menuMarkup);
+    }
+
+    case '/creature':
+    case '/creatures': {
+      const data = await client.loadPlayer().catch((e) => ({ error: e.message }));
+      if (data?.error) return tg.notify(`🐉 Failed to load: <code>${esc(data.error)}</code>`, menuMarkup);
+      return tg.notify(tg.formatCreatures(data), menuMarkup);
+    }
+
+    case '/eggs': {
+      const sol = await client.wallet.solBalance().catch(() => 0);
+      return tg.notify([
+        '<b>🥚 EGG CATALOG & QUALITY</b>',
+        '━━━━━━━━━━━━━━━━━━━━',
+        '<b>Available now:</b>',
+        '• <code>/buyegg basic</code> — 2.500 gold · Common 70 / Uncommon 30',
+        '• <code>/buyegg forest</code> — 50.000 gold · Common 40 / Uncommon 40 / <b>Rare 20</b>',
+        '',
+        '<b>GOOD eggs (locked — unlock when $ZOLANA goes live / Phase 3):</b>',
+        '• <code>/buyegg premium</code> — 50 gems · <b>Rare 50 / Epic 35 / Legendary 15</b> 🔥',
+        '• <code>/buyegg golden</code> — 90 gems · Guaranteed Golden variant (5× gold)',
+        '',
+        '<b>Other good creature sources:</b> gacha (<code>/gacha</code>), breed (<code>/breed</code>, needs Adult), marketplace.',
+        '',
+        `ℹ️ Good eggs need <b>gems</b>. How to get gems: see <code>/fund</code>.`,
+      ].join('\n'), menuMarkup);
+    }
+
+    case '/fund': {
+      const sol = await client.wallet.solBalance().catch(() => 0);
+      let token = null;
+      try { token = await client.wallet.tokenBalance(); } catch { /* no ata */ }
+      const lvl = state.data.lastPlayer?.level ?? '-';
+      return tg.notify([
+        '<b>💵 FUND THE ACCOUNT</b>',
+        '━━━━━━━━━━━━━━━━━━━━',
+        'Deposit $ZOLANA / SOL to the bot wallet:',
+        `<code>${esc(client.wallet.publicKey)}</code>`,
+        `🪙 $ZOLANA sekarang: <b>${token ? esc(Math.round(token.uiAmount).toLocaleString('en-US')) : '0'}</b>   ◎ SOL: <b>${Number(sol).toFixed(4)}</b>`,
+        '',
+        '<b>Funding → power (most worthwhile first):</b>',
+        `1️⃣ <b>Hold $ZOLANA</b> → daily gem stipend rises (10k hold≈9/day … 250k≈40/day). Needs account <b>Level 5</b> (now Lv ${esc(lvl)}). Gems → <code>/buyegg premium</code>.`,
+        '2️⃣ <b>Dungeon</b> (auto) → gem_catalyst → <code>/gemcraft</code> = free gems.',
+        '3️⃣ <b>$ZOLANA gacha</b> (<code>/gacha</code>) → pay token directly per pull (unlocks when token is live).',
+        '',
+        '💡 Most worth it: hold token for daily gems → premium egg (15% Legendary). The bot auto-buys premium eggs once gems ≥ 50 and the egg is unlocked.',
+      ].join('\n'), menuMarkup);
+    }
+
+    case '/claim': {
+      const player = await client.loadPlayer().catch(() => null);
+      for (const k of ['holdClaim', 'epochClaim', 'afk']) state.data.cooldowns[k] = 0;
+      await engine.freeClaims(player);
+      await engine.afkFarm(player);
+      await engine.safeAct('daily', () => client.claimDaily());
+      await engine.safeAct('idleClaim', () => client.claimIdle());
+      return tg.notify('🎁 All free rewards claimed (hold gems, epoch, dex, afk, daily, idle).', menuMarkup);
+    }
+
+    case '/slot': {
+      const res = await client.buyPlaceSlot().catch((e) => ({ error: e.message }));
+      if (res?.error) return tg.notify(`➕ Slot failed: <code>${res.error}</code>`, menuMarkup);
+      await client.placeAuto(1).catch(() => {});
+      return tg.notify('➕ Plot slot bought & creature placed.', menuMarkup);
+    }
+
+    case '/buyegg': {
+      const type = args[0] || 'basic';
+      const res = await client.buyEgg(type).catch((e) => ({ error: e.message }));
+      return tg.notify(res?.error ? `🥚 Failed: <code>${res.error}</code>` : `🥚 Egg <b>${esc(type)}</b> bought.`, menuMarkup);
+    }
+
+    case '/gacha': {
+      if (args[2] !== 'CONFIRM') {
+        let gems = 0;
+        try { gems = Number((await client.loadPlayer())?.player?.gems ?? 0); } catch { /* snapshot */ }
+        return tg.notify([
+          '🎰 <b>Gacha</b> — RNG result (needs CONFIRM)',
+          '━━━━━━━━━━━━━━━━━━━━',
+          `💎 Your gems: <b>${esc(gems)}</b>`,
+          '',
+          '<b>Use GEMS (cheap, recommended):</b>',
+          '• standard = 8 gems · deluxe = 15 gems',
+          '',
+          '<b>Use $ZOLANA token</b> (expensive ~99k/deluxe — only if gems run out):',
+          '• pay token directly to treasury',
+          '',
+          'Deluxe drops 6 cards: materials + gold + relic + <b>high-rarity egg</b> 🔥',
+        ].join('\n'), {
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '💎 Deluxe / 15 Gems', callback_data: '/gacha deluxe gems CONFIRM' }],
+              [{ text: '🎰 Standard / 8 Gems', callback_data: '/gacha standard gems CONFIRM' }],
+              [{ text: '🪙 Deluxe / $ZOLANA token', callback_data: '/gacha deluxe zenko CONFIRM' }],
+              [{ text: '⬅️ Back', callback_data: '/start' }],
+            ],
+          },
+        });
+      }
+      const tier = normalizeGachaTier(args[0] || 'deluxe');
+      if (!tier) {
+        return tg.notify('🎰 Unknown tier. Use <code>standard</code> or <code>deluxe</code>.', menuMarkup);
+      }
+      const currency = (args[1] || 'gems').toLowerCase();
+      if (!['gems', 'zenko', 'zolana'].includes(currency)) {
+        return tg.notify('🎰 Valid currency: <code>gems</code> or <code>zenko</code> ($ZOLANA token).', menuMarkup);
+      }
+      await tg.notify(`🎰 Pulling gacha <b>${esc(tier)}</b> (${esc(currency === 'gems' ? 'gems' : '$ZOLANA token')})…`);
+      const res = await client.gachaPayAndPull(tier, currency).catch((e) => ({ error: e.message }));
+      if (res?.error) {
+        logger.warn({ tier, currency, message: res.error }, 'gacha failed');
+        return tg.notify(`🎰 Failed: <code>${esc(res.error)}</code>`, menuMarkup);
+      }
+      state.count(`gacha:${tier}:${currency}`);
+      if (res?.player) state.data.lastPlayer = engine.snapshotPlayer(res);
+      state.save();
+      const cards = formatGachaCards(res?.gacha);
+      const cost = res?.gacha?.costGems ? `${res.gacha.costGems} gems` : (res?.gacha?.costZenko ? `${Number(res.gacha.costZenko).toLocaleString('en-US')} $ZOLANA` : '');
+      logger.info({ tier, currency, cards: res?.gacha?.cards }, 'gacha ok');
+      return tg.notify([
+        `🎉 <b>GACHA ${esc(tier.toUpperCase())} — DAPAT:</b>`,
+        cost ? `<i>cost ${esc(cost)}</i>` : '',
+        '━━━━━━━━━━━━━━━━━━━━',
+        cards || 'Result saved (check /inventory).',
+      ].filter(Boolean).join('\n'), menuMarkup);
+    }
+
+    case '/store': {
+      const res = await client.storeState().catch((e) => ({ error: e.message }));
+      if (res?.error) return tg.notify(`🛒 Store failed: <code>${res.error}</code>`, menuMarkup);
+      const offers = Array.isArray(res?.offers) ? res.offers : Array.isArray(res) ? res : [];
+      if (!offers.length) return tg.notify('🛒 Store empty / no offers.', menuMarkup);
+      const lines = ['<b>🛒 GEM STORE</b>', '━━━━━━━━━━━━━━━━━━━━'];
+      for (const o of offers.slice(0, 12)) {
+        lines.push(`• <b>${esc(o.label || o.name || o.id)}</b> — ${esc(o.cost ?? o.price ?? '?')} ${esc(o.currency || '')}\n  <code>/buy ${esc(o.id)}</code>`);
+      }
+      return tg.notify(lines.join('\n'), menuMarkup);
+    }
+
+    case '/buy': {
+      const id = args[0];
+      if (!id) return tg.notify('Format: <code>/buy &lt;offerId&gt;</code>');
+      const res = await client.storeBuy(id).catch((e) => ({ error: e.message }));
+      return tg.notify(res?.error ? `🛒 Failed: <code>${res.error}</code>` : `🛒 Offer <code>${esc(id)}</code> bought.`, menuMarkup);
+    }
+
+    case '/listing':
+    case '/listings': {
+      const res = await client.marketMine().catch((e) => ({ error: e.message }));
+      if (res?.error) return tg.notify(`📄 Failed: <code>${res.error}</code>`, menuMarkup);
+      const items = Array.isArray(res?.listings) ? res.listings : [];
+      if (!items.length) return tg.notify('📄 No active listings.', menuMarkup);
+      const lines = ['<b>📄 LISTING SAYA</b>', '━━━━━━━━━━━━━━━━━━━━'];
+      for (const it of items.slice(0, 15)) {
+        const p = it.price_usd != null ? `$${it.price_usd}` : (it.price_gems != null ? `${it.price_gems}💎` : '?');
+        lines.push(`• ${esc(it.item_kind || 'item')} — ${p}\n  <code>/cancel ${esc(it.id)}</code>`);
+      }
+      return tg.notify(lines.join('\n'), menuMarkup);
+    }
+
+    case '/cancel': {
+      const id = args[0];
+      if (!id) return tg.notify('Format: <code>/cancel &lt;listingId&gt;</code>');
+      const res = await client.marketCancel(id).catch((e) => ({ error: e.message }));
+      return tg.notify(res?.error ? `❌ Failed: <code>${res.error}</code>` : `❌ Listing <code>${esc(id)}</code> cancelled.`, menuMarkup);
+    }
+
+    case '/leaderboard': {
+      const res = await client.leaderboards().catch((e) => ({ error: e.message }));
+      if (res?.error) return tg.notify(`🏆 Failed: <code>${res.error}</code>`, menuMarkup);
+      const rows = Array.isArray(res?.leaderboard) ? res.leaderboard : Array.isArray(res) ? res : [];
+      if (!rows.length) return tg.notify('🏆 Leaderboard empty.', menuMarkup);
+      const lines = ['<b>🏆 LEADERBOARD</b>', '━━━━━━━━━━━━━━━━━━━━'];
+      rows.slice(0, 10).forEach((r, i) => lines.push(`${i + 1}. ${esc(r.username || r.name || r.wallet)} — ${esc(r.score ?? r.level ?? '')}`));
+      return tg.notify(lines.join('\n'), menuMarkup);
+    }
+
+    case '/deposit': {
+      const balance = await client.wallet.solBalance().catch(() => 0);
+      return tg.notify([
+        '<b>📥 DEPOSIT</b>',
+        '━━━━━━━━━━━━━━━━━━━━',
+        `Address:\n<code>${esc(client.wallet.publicKey)}</code>`,
+        `◎ SOL balance: <b>${Number(balance).toFixed(6)}</b>`,
+        '',
+        'Send SOL to this address for gas & market actions.',
+      ].join('\n'), menuMarkup);
+    }
+
+    case '/genwallet': {
+      const wallet = generateWallet();
+      fs.mkdirSync('data/generated-wallets', { recursive: true });
+      const file = `data/generated-wallets/${wallet.publicKey}.json`;
+      fs.writeFileSync(file, JSON.stringify({
+        publicKey: wallet.publicKey,
+        privateKey: wallet.privateKey,
+        secretKey: wallet.json,
+        createdAt: new Date().toISOString(),
+      }, null, 2), { mode: 0o600 });
+      fs.chmodSync(file, 0o600);
+
+      const showPrivate = args[0] === 'SHOW_PRIVATE' && args[1] === 'CONFIRM';
+      const lines = [
+        '<b>🧾 GENERATED WALLET</b>',
+        '━━━━━━━━━━━━━━━━━━━━',
+        `Address:\n<code>${esc(wallet.publicKey)}</code>`,
+        `Saved local:\n<code>${esc(file)}</code>`,
+      ];
+      if (showPrivate) {
+        lines.push('', `Private key:\n<code>${esc(wallet.privateKey)}</code>`);
+      } else {
+        lines.push('', 'Private key not shown in chat.');
+        lines.push('If you really need to show it:');
+        lines.push('<code>/genwallet SHOW_PRIVATE CONFIRM</code>');
+      }
+      return tg.notify(lines.join('\n'), menuMarkup);
+    }
+
+    case '/sendfee': {
+      const [amount, destination, confirm] = args;
+      if (!amount || !destination || confirm !== 'CONFIRM') {
+        return tg.notify([
+          '<b>💸 SEND SOL FEE</b>',
+          '━━━━━━━━━━━━━━━━━━━━',
+          'Format:',
+          '<code>/sendfee &lt;amount_SOL&gt; &lt;destination_wallet&gt; CONFIRM</code>',
+          '',
+          `Max sekali kirim: <b>${config.ZOLANA_MAX_WITHDRAW_SOL}</b> SOL`,
+          `Reserve: <b>${config.ZOLANA_WITHDRAW_MIN_SOL_RESERVE}</b> SOL`,
+        ].join('\n'), menuMarkup);
+      }
+      const signature = await client.wallet.withdrawSol(amount, destination).catch((e) => ({ error: e.message }));
+      if (signature?.error) return tg.notify(`💸 Send fee failed: <code>${esc(signature.error)}</code>`, menuMarkup);
+      return tg.notify(`💸 SOL fee sent:\n<code>${esc(signature)}</code>`, menuMarkup);
+    }
+
+    case '/sendzolana': {
+      const [amount, destination, confirm] = args;
+      if (!amount || !destination || confirm !== 'CONFIRM') {
+        return tg.notify([
+          '<b>🪙 SEND $ZOLANA</b>',
+          '━━━━━━━━━━━━━━━━━━━━',
+          'Format:',
+          '<code>/sendzolana &lt;amount_ZOLANA&gt; &lt;destination_wallet&gt; CONFIRM</code>',
+          '',
+          `Reserve default: <b>${config.ZOLANA_MARKET_ZOLANA_RESERVE}</b> $ZOLANA`,
+        ].join('\n'), menuMarkup);
+      }
+      const signature = await client.wallet.transferToken(amount, destination).catch((e) => ({ error: e.message }));
+      if (signature?.error) return tg.notify(`🪙 Send $ZOLANA failed: <code>${esc(signature.error)}</code>`, menuMarkup);
+      return tg.notify(`🪙 $ZOLANA sent:\n<code>${esc(signature)}</code>`, menuMarkup);
+    }
+
+    case '/sweep': {
+      const [destination, sweepAll, confirm] = args;
+      if (!destination || sweepAll !== 'SWEEP_ALL' || confirm !== 'CONFIRM') {
+        return tg.notify([
+          '<b>🧹 SWEEP $ZOLANA</b>',
+          '━━━━━━━━━━━━━━━━━━━━',
+          'Send all $ZOLANA from this bot wallet to a destination.',
+          '',
+          'Format:',
+          '<code>/sweep &lt;destination_wallet&gt; SWEEP_ALL CONFIRM</code>',
+          '',
+          'For the main account, only use this if you really want to empty the token.',
+        ].join('\n'), menuMarkup);
+      }
+      const signature = await client.wallet.sweepToken(destination).catch((e) => ({ error: e.message }));
+      if (signature?.error) return tg.notify(`🧹 Sweep failed: <code>${esc(signature.error)}</code>`, menuMarkup);
+      return tg.notify(`🧹 $ZOLANA swept:\n<code>${esc(signature)}</code>`, menuMarkup);
+    }
+
+    case '/withdrawal':
+    case '/withdraw': {
+      const [amount, destination, confirm] = args;
+      if (!amount || !destination || confirm !== 'CONFIRM') {
+        return tg.notify('Format: <code>/withdrawal &lt;amount_SOL&gt; &lt;destination_wallet&gt; CONFIRM</code>');
+      }
+      const signature = await client.wallet.withdrawSol(amount, destination).catch((e) => ({ error: e.message }));
+      if (signature?.error) return tg.notify(`📤 Failed: <code>${signature.error}</code>`, menuMarkup);
+      return tg.notify(`📤 Withdrawal sent:\n<code>${esc(signature)}</code>`, menuMarkup);
+    }
+
+    default:
+      return; // ignore non-commands / chatter
+  }
+}
+
+function esc(value) {
+  return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+}
+
+// Send any messages the strategy queued during the cycle (e.g. autopilot gacha drops).
+async function drainNotifications(telegram, state) {
+  const queue = Array.isArray(state.data.notify) ? state.data.notify : [];
+  if (!queue.length) return;
+  state.data.notify = [];
+  state.save();
+  for (const item of queue) {
+    if (item?.type === 'gacha') {
+      const cards = formatGachaCards(item.gacha);
+      if (cards) await telegram.notify(`🎰 <b>Auto-gacha ${esc(item.gacha?.tier || '')} — DAPAT:</b>\n━━━━━━━━━━━━━━━━━━━━\n${cards}`);
+    } else if (item?.text) {
+      await telegram.notify(item.text);
+    }
+  }
+}
+
+// Crash guards: a stray async error must never kill the long-running bot. Log and
+// keep going (systemd also restarts on a real exit, but we prefer to stay up).
+process.on('unhandledRejection', (reason) => {
+  logger.error({ message: reason?.message || String(reason) }, 'unhandledRejection (ignored)');
+});
+process.on('uncaughtException', (error) => {
+  logger.error({ message: error?.message || String(error) }, 'uncaughtException (ignored)');
+});
+
+main().catch((error) => {
+  // Only hard-exit on setup errors (bad key/config); systemd will restart transient ones.
+  if (error.message.includes('ZOLANA_PRIVATE_KEY')) {
+    logger.error({ message: error.message }, 'setup incomplete');
+    process.exit(1);
+  }
+  logger.fatal({ message: error.message }, 'bot crashed — systemd will restart');
+  process.exit(1);
+});

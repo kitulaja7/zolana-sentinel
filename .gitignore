@@ -1,0 +1,25 @@
+# --- Secrets & credentials (NEVER commit) ---
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+data/generated-wallets/
+wallet.json
+keypair.json
+
+# --- Runtime state (contains session offsets / operational data) ---
+data/
+logs/
+*.log
+
+# --- Reverse-engineering artifacts (large / contain captured sessions) ---
+*.har
+play.zolana.gg.har
+live-recon/
+recon/
+har-summary.json
+
+# --- Dependencies / build ---
+node_modules/
+npm-debug.log*
