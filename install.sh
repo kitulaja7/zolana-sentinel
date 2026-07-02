@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Zolana Bot — one-line installer (full dependencies).
+# Zolana Sentinel — one-line installer (full dependencies).
 #
-#   curl -fsSL https://raw.githubusercontent.com/rygroup-dev/zolana-bot/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/rygroup-dev/zolana-sentinel/main/install.sh | bash
 #
 # Installs Node.js (if missing), clones the repo, installs all npm dependencies,
 # and scaffolds the .env config. Idempotent — safe to re-run.
 set -euo pipefail
 
-REPO="https://github.com/rygroup-dev/zolana-bot.git"
-DIR="${ZOLANA_DIR:-$HOME/zolana-bot}"
+REPO="https://github.com/rygroup-dev/zolana-sentinel.git"
+DIR="${ZOLANA_DIR:-$HOME/zolana-sentinel}"
 NODE_MAJOR=20
 
 log() { printf '\033[1;36m[zolana]\033[0m %s\n' "$*"; }
@@ -53,7 +53,7 @@ fi
 
 cat <<EOF
 
-  ✅ Zolana Bot installed at $DIR
+  ✅ Zolana Sentinel installed at $DIR
 
   Next:
     1. Edit $DIR/.env  (ZOLANA_PRIVATE_KEY, ZOLANA_TELEGRAM_BOT_TOKEN, ZOLANA_TELEGRAM_CHAT_ID)

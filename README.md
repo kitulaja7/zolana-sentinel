@@ -1,54 +1,89 @@
-# Zolana Bot
+<div align="center">
 
-Autonomous farming, trading and progression bot for [play.zolana.gg](https://play.zolana.gg) — a Solana creature-collector MMO. Runs a smart autopilot (farming, dungeons/raids, evolve, breed, gacha, quests, crafting, market) and is fully controllable from Telegram.
+# ⚡ Zolana Sentinel
 
-## Install (one line)
+**Autonomous farming, trading & progression bot for [play.zolana.gg](https://play.zolana.gg)**
+
+A smart, self-optimizing autopilot for the Solana creature-collector MMO — fully controllable from Telegram.
+
+[![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A518-339933?logo=node.js&logoColor=white)](https://nodejs.org)
+[![Solana](https://img.shields.io/badge/Solana-Mainnet-9945FF?logo=solana&logoColor=white)](https://solana.com)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS-informational)](#)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+</div>
+
+---
+
+## Overview
+
+Zolana Sentinel plays the game for you — around the clock. It reverse-engineers the game economy and makes profit-optimal decisions every cycle: it farms with your best creatures, raids the deepest dungeon it can clear, evolves and breeds toward higher rarities, claims every quest and reward, crafts from surplus materials, and trades on the marketplace — all while staying safe against rate limits and detection.
+
+## ✨ Features
+
+| | |
+| --- | --- |
+| 🌾 **Smart farming** | Always places the highest gold-per-hour creatures; auto-swaps weak ones out. |
+| 🏰 **Dungeon / raid climbing** | Auto-calibrates party power and climbs the 25 floors as far as it can clear. |
+| 🧬 **Growth engine** | Budget-aware evolve, breeding for rarity upgrades, gacha, and gem crafting. |
+| 📜 **Full reward collection** | Quests, dex milestones, daily, idle, epoch, hold-claims — nothing left on the table. |
+| 💠 **Material economy** | Keeps craft/build reserves, sells only the surplus at market floor. |
+| 🏪 **Marketplace** | Edge-gated buying and anti-dump selling once unlocked. |
+| ⚔️ **PvP** | Auto-builds a battle team and competes when Elder creatures are available. |
+| 💰 **Profit tracker** | Live net-worth and $ZOLANA valuation. |
+| 📲 **Telegram control** | Inline dashboard + 25+ commands, responses in ~1s. |
+| 🛡️ **Resilient & stealthy** | Real browser headers, request jitter, retry/backoff, auto re-auth, crash guards. |
+
+## 🚀 Quick Start
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rygroup-dev/zolana-bot/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rygroup-dev/zolana-sentinel/main/install.sh | bash
 ```
 
-This installs Node.js (if missing), clones the repo, installs all dependencies, and creates `.env`.
+Installs Node.js (if missing), clones the repo, installs all dependencies, and scaffolds `.env`.
 
-Or manually:
+<details>
+<summary>Manual install</summary>
 
 ```bash
-git clone https://github.com/rygroup-dev/zolana-bot.git
-cd zolana-bot
+git clone https://github.com/rygroup-dev/zolana-sentinel.git
+cd zolana-sentinel
 npm install
 cp .env.example .env   # then edit .env
 ```
+</details>
 
-## Configure
+## ⚙️ Configuration
 
-Edit `.env` (see `.env.example` for every option):
+Edit `.env` — see [`.env.example`](.env.example) for every option.
 
 | Key | Purpose |
 | --- | --- |
-| `ZOLANA_PRIVATE_KEY` | Wallet secret (base58 or JSON array). Used to sign login + token transfers. |
-| `ZOLANA_TELEGRAM_BOT_TOKEN` | Telegram bot token (from @BotFather). |
+| `ZOLANA_PRIVATE_KEY` | Your wallet secret (base58 or JSON array). Signs login + token transfers. |
+| `ZOLANA_TELEGRAM_BOT_TOKEN` | Telegram bot token from [@BotFather](https://t.me/BotFather). |
 | `ZOLANA_TELEGRAM_CHAT_ID` | Your Telegram chat id (owner-only control). |
-| `ZOLANA_REAL_RUN` | `true` to act, `false` for dry-run. |
+| `ZOLANA_REAL_RUN` | `true` to act on-chain, `false` for a safe dry-run. |
 | `SOLANA_RPC_URL` | Solana RPC endpoint. |
 
-Secrets are read from the environment only and never committed (`.env` is git-ignored).
+> **Security:** every credential is read from the environment. `.env` is git-ignored and never committed. Each user runs with their **own** wallet and keys.
 
-## Run
+## ▶️ Run
 
 ```bash
 node src/index.js          # long-running autopilot + Telegram control
 node src/index.js --once   # run a single cycle and exit
 ```
 
-### As a systemd service (Linux)
+<details>
+<summary>Run as a systemd service (Linux)</summary>
 
 ```ini
 [Unit]
-Description=Zolana Bot
+Description=Zolana Sentinel
 After=network-online.target
 
 [Service]
-WorkingDirectory=/root/zolana-bot
+WorkingDirectory=/root/zolana-sentinel
 ExecStart=/usr/bin/node src/index.js
 Restart=always
 RestartSec=10
@@ -58,28 +93,34 @@ WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable --now zolana-bot
-journalctl -u zolana-bot -f
+sudo systemctl enable --now zolana-sentinel
+journalctl -u zolana-sentinel -f
 ```
+</details>
 
-## Telegram
+## 📲 Telegram Control
 
-Message the bot and use the inline dashboard or slash commands: `/status`, `/wallet`, `/profit`, `/inventory`, `/creature`, `/dungeon`, `/gacha`, `/fund`, `/auto` (per-module toggles), and more. `/help` lists everything.
+Message your bot and use the inline dashboard or slash commands:
 
-## Design
+`/status` · `/wallet` · `/profit` · `/inventory` · `/creature` · `/dungeon` · `/gacha` · `/eggs` · `/fund` · `/auto` (per-module toggles) · `/help`
 
-- **Autopilot** — the strategy cycle runs on an interval; Telegram is long-polled continuously so commands respond in ~1s.
-- **Smart economy** — always farms the highest gold-per-hour creatures, climbs dungeon floors it can clear, keeps crafting reserves and sells only surplus, and never spends below safety reserves.
-- **Resilient** — per-request timeouts, retry/backoff on network/rate-limit errors, auto re-auth, jittered pacing, and crash guards.
+Every autopilot module can be toggled live from the `/auto` panel.
 
-## Layout
+## 🧠 How It Works
+
+- **Decoupled loop** — the strategy cycle runs on an interval while Telegram is long-polled continuously, so commands respond in ~1 second.
+- **Profit-first** — decisions are ranked by expected value: farm the best producers, raid for materials + gold, spend only surplus, and never dip below safety reserves.
+- **Self-calibrating** — learns party power from the game, climbs dungeon floors, and adapts as the account grows.
+- **Hardened** — per-request timeouts, exponential backoff on network/rate-limit errors, transparent re-authentication, human-like pacing, and process-level crash guards.
+
+## 📁 Project Structure
 
 ```
 src/
   index.js      main loop + Telegram command router
   strategy.js   autopilot brain (farming, dungeon, evolve, breed, gacha, market…)
   client.js     game API client (auth, requests, hardening)
-  wallet.js     Solana wallet (sign, token transfers)
+  wallet.js     Solana wallet (signing, token transfers)
   telegram.js   Telegram bot (dashboard, formatters)
   config.js     env-validated configuration
   state.js      persisted runtime state
@@ -87,6 +128,10 @@ src/
   captcha.js    optional 2captcha fallback
 ```
 
-## License
+## ⚠️ Disclaimer
 
-Private. All rights reserved.
+For educational purposes. Automating a game may violate its terms of service — use at your own risk. You are responsible for your own wallet, keys, and funds.
+
+## 📜 License
+
+Released under the [MIT License](LICENSE).
