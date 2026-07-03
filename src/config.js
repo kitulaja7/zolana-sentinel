@@ -28,6 +28,12 @@ const schema = z.object({
   ZOLANA_HAR_PATH: z.string().default('/root/zolana/play.zolana.gg.har'),
   SOLANA_RPC_URL: z.string().url().default('https://api.mainnet-beta.solana.com'),
   ZOLANA_TOKEN_MINT: z.string().default('Ez6gPDiNK7VtGe5o9vnhDHJq9QPHvEYmSo8teu8mpump'),
+  // Canonical game treasury (from the client bundle `zolanaTreasury` — matches the
+  // server-provided gacha/market treasury). Stamina restore is an on-chain $ZOLANA
+  // transfer here (no server quote), so this address must be exact.
+  ZOLANA_TREASURY: z.string().default('Auywa2xpfcTaBmfzNCLXSLTM5kzBh9kwjuABHY2usVNC'),
+  // Stamina restore ("Stamina Elixir") cost in whole $ZOLANA → refills to full (180).
+  ZOLANA_STAMINA_ZENKO_COST: z.coerce.number().int().min(1).default(50),
   ZOLANA_AUTO_MARKET: z.coerce.boolean().default(true),
   ZOLANA_AUTO_MARKET_BUY: z.coerce.boolean().default(true),
   ZOLANA_AUTO_MARKET_SELL: z.coerce.boolean().default(true),

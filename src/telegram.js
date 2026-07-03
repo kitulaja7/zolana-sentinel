@@ -227,6 +227,7 @@ export class TelegramBot {
       { command: 'buyegg', description: '🥚 Egg menu + auto-buy ON/OFF' },
       { command: 'gacha', description: '🎰 Gacha pull (tier currency)' },
       { command: 'buygems', description: '💎 Buy gems with $ZOLANA (shows prices)' },
+      { command: 'buystamina', description: '⚡ Buy full stamina with $ZOLANA (on-chain)' },
       { command: 'listing', description: '📄 My market listings' },
       { command: 'listings', description: '📄 My market listings' },
       { command: 'cancel', description: '❌ Cancel a listing <id>' },

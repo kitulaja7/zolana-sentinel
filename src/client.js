@@ -392,6 +392,29 @@ export class ZolanaClient {
     });
   }
 
+  // Buy stamina with $ZOLANA (on-chain). Unlike gacha/market there is NO server quote —
+  // /api/stamina/restore 400s ("Missing transaction signature") without a signature — so
+  // the cost (50 $ZOLANA → full 180) and treasury are known client-side. Transfer the
+  // tokens to the canonical treasury, then submit {pack, signature}. Reserve-guarded.
+  async staminaRestore(pack = 'full') {
+    const cost = config.ZOLANA_STAMINA_ZENKO_COST;
+    const decimals = 6; // $ZOLANA mint decimals
+    const balance = await this.wallet.tokenBalance().catch(() => null);
+    if (balance && balance.uiAmount - cost < config.ZOLANA_MARKET_ZOLANA_RESERVE) {
+      throw Object.assign(
+        new Error(`stamina: butuh ${cost} $ZOLANA + reserve ${config.ZOLANA_MARKET_ZOLANA_RESERVE}, saldo ${Math.round(balance?.uiAmount || 0)}`),
+        { data: { cost } },
+      );
+    }
+    const rawAmount = BigInt(cost) * (10n ** BigInt(decimals));
+    const signature = await this.wallet.transferTokenSplit(
+      [{ toOwner: config.ZOLANA_TREASURY, rawAmount }],
+      config.ZOLANA_TOKEN_MINT,
+      decimals,
+    );
+    return this.post('/api/stamina/restore', { pack, signature });
+  }
+
   async gemCraft() {
     return this.post('/api/gem/craft');
   }

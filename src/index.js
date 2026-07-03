@@ -364,6 +364,53 @@ async function handleCommand(command, tg, engine, state) {
       return tg.notify(res?.error ? `🥚 Failed: <code>${res.error}</code>` : `🥚 Egg <b>${esc(type)}</b> bought.`, menuMarkup);
     }
 
+    case '/buystamina': {
+      // On-chain $ZOLANA purchase → full stamina. MANUAL only (token spend, zero-mistake
+      // mandate: no autopilot auto-drains the wallet). Confirm-gated like /buygems.
+      const fmtN = (n) => Number(n || 0).toLocaleString('en-US');
+      const cost = config.ZOLANA_STAMINA_ZENKO_COST;
+      const readStamina = async () => {
+        try { const p = await client.loadPlayer(); const a = (p.player || p).account || p.player || p; return Number(a.stamina); }
+        catch { return null; }
+      };
+
+      if (args[0] === 'CONFIRM') {
+        await tg.notify(`⚡ Restoring stamina — sending <b>${esc(fmtN(cost))}</b> $ZOLANA on-chain…`);
+        const res = await client.staminaRestore('full').catch((e) => ({ error: e.message }));
+        if (res?.error) return tg.notify(`⚡ Failed: <code>${esc(res.error)}</code>`, menuMarkup);
+        state.count('buystamina'); state.save();
+        const stam = await readStamina();
+        logger.info({ spentZolana: cost }, 'stamina restored (on-chain)');
+        return tg.notify([
+          '⚡ <b>STAMINA RESTORED</b>',
+          '━━━━━━━━━━━━━━━━━━━━',
+          `Full stamina for <b>${esc(fmtN(cost))}</b> $ZOLANA`,
+          stam != null ? `🔋 Stamina now: <b>${esc(stam)}</b>` : '',
+          'Autopilot will now RAID with your strongest creatures.',
+        ].filter(Boolean).join('\n'), menuMarkup);
+      }
+
+      const stam = await readStamina();
+      const bal = await client.wallet.tokenBalance().catch(() => null);
+      return tg.notify([
+        '⚡ <b>Buy Stamina</b>',
+        '━━━━━━━━━━━━━━━━━━━━',
+        stam != null ? `🔋 Current stamina: <b>${esc(stam)}</b>` : '',
+        `💰 Cost: <b>${esc(fmtN(cost))}</b> $ZOLANA → <b>full</b> stamina (raid fuel)`,
+        bal ? `👛 Your $ZOLANA: <b>${esc(fmtN(Math.floor(bal.uiAmount)))}</b>` : '',
+        '',
+        '⚠️ Sends a real on-chain transaction — manual only (no autopilot).',
+        'Tap to confirm:',
+      ].filter(Boolean).join('\n'), {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: `⚡ Buy Full Stamina · ${fmtN(cost)} $ZOLANA`, callback_data: '/buystamina CONFIRM' }],
+            [{ text: '⬅️ Back', callback_data: '/start' }],
+          ],
+        },
+      });
+    }
+
     case '/gacha': {
       if (args[2] !== 'CONFIRM') {
         let gems = 0;
