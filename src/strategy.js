@@ -70,6 +70,7 @@ const STAGE_CFG = {
 // higher floors. Power-gated: reqPower(floor)=120·floor^1.85·(1+min(0.7,0.03·floor))
 // → f1≈124, f2≈459, f3≈1002, f5≈2705, f10≈7534, f25≈36k (verified live). Drops
 // glimmer_dust/mana_shard/astral_core/gem_catalyst + gold.
+const GEMCRAFT_GOLD_COST = 90000; // server-validated cost of one gem_catalyst craft
 const REGION_STAMINA = [6, 8, 10, 14, 18];
 const REGION_NAMES = ['Meadow Hollows', 'Tidal Caverns', 'Ember Depths', 'Shadow Reach', 'Celestial Spire'];
 const DUNGEONS = Array.from({ length: 25 }, (_, i) => {
@@ -651,6 +652,13 @@ export class StrategyEngine {
     if (!this.state.ready('gemcraft')) return;
     const catalyst = list(player?.materials).find((m) => m.material_id === 'gem_catalyst');
     if (!catalyst || Number(catalyst.quantity || 0) < 5) {
+      this.state.cooldown('gemcraft', 30 * 60 * 1000);
+      return;
+    }
+    // gemCraft costs 90k gold (server-validated). Never spend it below the d_gold
+    // reserve, or the +150 acct-XP/day "hold 30k gold" quest breaks next reset.
+    const gold = Number(actor(player).gold || 0);
+    if (gold - GEMCRAFT_GOLD_COST < config.ZOLANA_EVOLVE_GOLD_RESERVE) {
       this.state.cooldown('gemcraft', 30 * 60 * 1000);
       return;
     }
