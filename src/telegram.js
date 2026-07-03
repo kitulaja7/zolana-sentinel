@@ -94,6 +94,7 @@ export class TelegramBot {
         [
           { text: '📊 Status', callback_data: '/status' },
           { text: '🏪 Market', callback_data: '/market' },
+          { text: '🏷️ Jual', callback_data: '/sell' },
           { text: '💰 Wallet', callback_data: '/wallet' },
         ],
         [
@@ -207,6 +208,7 @@ export class TelegramBot {
       { command: 'wallet', description: '💰 SOL + $ZOLANA balance' },
       { command: 'profit', description: '📈 Net worth & profit tracker' },
       { command: 'market', description: '🏪 Marketplace analysis' },
+      { command: 'sell', description: '🏷️ Jual item manual (set harga & qty)' },
       { command: 'store', description: '🛒 Gem store offers' },
       { command: 'pvp', description: '⚔️ Run a PvP match' },
       { command: 'dungeon', description: '🏰 Start/claim dungeon (raid)' },

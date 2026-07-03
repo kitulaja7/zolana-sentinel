@@ -1156,12 +1156,70 @@ export class StrategyEngine {
     }
   }
 
+  // Notify when one of OUR listings sells. We snapshot our active listing IDs in
+  // state.data.myListings; next cycle a listing that turned non-active (sold_at/buyer/
+  // status) or vanished AND shows up in recentSales as our sale = SOLD. Pure
+  // disappearance with no sale trace = expired/cancelled (stays silent).
+  detectSoldListings(mineListings = [], recentSales = []) {
+    const wallet = this.client.wallet.publicKey;
+    const prev = this.state.data.myListings || {};
+    const soldById = {};
+    for (const s of list(recentSales)) {
+      if (s?.id && s.seller === wallet) soldById[s.id] = s;
+    }
+    const notes = [];
+    const active = {};
+    const present = new Set();
+    for (const l of list(mineListings)) {
+      if (!l?.id) continue;
+      present.add(l.id);
+      const isSold = l.sold_at || l.buyer || (l.status && l.status !== 'active');
+      if (isSold) {
+        if (prev[l.id]) notes.push(this.saleNote(l));
+        continue;
+      }
+      active[l.id] = { kind: l.item_kind, price: l.price_usd, resource: l.resource, qty: l.quantity };
+    }
+    for (const id of Object.keys(prev)) {
+      if (present.has(id)) continue; // already handled (sold in-place) above
+      if (soldById[id]) notes.push(this.saleNote(soldById[id]));
+    }
+    this.state.data.myListings = active;
+    return notes;
+  }
+
+  saleNote(x) {
+    const name = x.resource || x.item?.creature_id || x.item_kind || 'item';
+    const qty = x.quantity ? `×${Math.round(Number(x.quantity)).toLocaleString('en-US')} ` : '';
+    const price = x.price_usd != null ? `$${x.price_usd}` : (x.price_gems != null ? `${x.price_gems}💎` : '?');
+    const buyer = x.buyer ? `\n👤 buyer <code>${String(x.buyer).slice(0, 6)}…</code>` : '';
+    return `💰 <b>TERJUAL!</b> ${qty}${name} — <b>${price}</b>${buyer}`;
+  }
+
+  // List an item AND fire a Telegram notification on success. Tracking of the new
+  // listing ID happens on the next marketIntel via marketMine (detectSoldListings).
+  async listOnMarket(actName, payload) {
+    const res = await this.safeAct(actName, () => this.client.marketList(payload));
+    if (res) {
+      const name = payload.resource || payload.itemKind || 'item';
+      const qty = payload.quantity ? `×${Math.round(Number(payload.quantity)).toLocaleString('en-US')} ` : '';
+      this.queueNotify({ text: `🏷️ <b>Dijual di market</b>\n${qty}${name} — <b>$${payload.priceUsd}</b>` });
+    }
+    return res;
+  }
+
   async marketIntel() {
     if (!this.state.ready('market')) return;
     const summary = {};
     const books = {};
     const recent = await this.safeAct('market:recent-sales', () => this.client.recentSales()) || {};
     const recentSales = list(recent.sales);
+    const mine = await this.safeAct('market:mine:intel', () => this.client.marketMine());
+    if (mine) {
+      for (const note of this.detectSoldListings(list(mine.listings), recentSales)) {
+        this.queueNotify({ text: note });
+      }
+    }
 
     for (const kind of MARKET_KINDS) {
       const data = await this.safeAct(`market:${kind}`, () => this.client.market(kind, { sort: 'cheap', limit: 50 }));
@@ -1310,12 +1368,12 @@ export class StrategyEngine {
       const creature = spareCreatures[0];
       const price = this.sellPriceUsd(summary.creature);
       if (price) {
-        await this.safeAct(`market:list:${creature.id}`, () => this.client.marketList({
+        await this.listOnMarket(`market:list:${creature.id}`, {
           itemKind: 'creature',
           itemId: creature.id,
           currency: 'zenko',
           priceUsd: price,
-        }));
+        });
         this.state.cooldown('market:list:creature', 60 * 60 * 1000);
       }
     }
@@ -1327,12 +1385,12 @@ export class StrategyEngine {
     if (spareEggs.length > 2 && this.state.ready('market:list:egg')) {
       const price = this.sellPriceUsd(summary.egg);
       if (price) {
-        await this.safeAct(`market:list:${spareEggs[0].id}`, () => this.client.marketList({
+        await this.listOnMarket(`market:list:${spareEggs[0].id}`, {
           itemKind: 'egg',
           itemId: spareEggs[0].id,
           currency: 'zenko',
           priceUsd: price,
-        }));
+        });
         this.state.cooldown('market:list:egg', 60 * 60 * 1000);
       }
     }
@@ -1347,12 +1405,12 @@ export class StrategyEngine {
         : 1 / 320_000; // fallback if no market data yet
       const priceUsd = Number((quantity * unit).toFixed(2));
       if (quantity > 0 && priceUsd > 0) {
-        await this.safeAct('market:list:gold', () => this.client.marketList({
+        await this.listOnMarket('market:list:gold', {
           itemKind: 'gold',
           quantity,
           currency: 'zenko',
           priceUsd,
-        }));
+        });
         this.state.cooldown('market:list:gold', 2 * 60 * 60 * 1000);
       }
     }
@@ -1394,13 +1452,13 @@ export class StrategyEngine {
     const best = candidates[0];
     const priceUsd = Number((best.qty * best.unit * config.ZOLANA_MARKET_SELL_UNDERCUT).toFixed(4));
     if (priceUsd <= 0) return;
-    await this.safeAct(`market:list:material:${best.id}`, () => this.client.marketList({
+    await this.listOnMarket(`market:list:material:${best.id}`, {
       itemKind: 'material',
       resource: best.id,
       quantity: best.qty,
       currency: 'zenko',
       priceUsd,
-    }));
+    });
     this.state.cooldown('market:list:material', 90 * 60 * 1000);
     logger.info({ material: best.id, qty: best.qty, priceUsd }, 'listed surplus material');
   }

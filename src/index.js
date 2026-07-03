@@ -586,6 +586,103 @@ async function handleCommand(command, tg, engine, state) {
       return tg.notify(res?.error ? `❌ Failed: <code>${res.error}</code>` : `❌ Listing <code>${esc(id)}</code> cancelled.`, menuMarkup);
     }
 
+    case '/sell': {
+      const fmtN = (n) => Number(n || 0).toLocaleString('en-US');
+      const fmtUsd = (n) => `$${Number(n || 0).toFixed(Number(n) < 0.01 ? 4 : 2)}`;
+      const summary = state.data.market?.summary || {};
+      let player;
+      try { player = await client.loadPlayer(); }
+      catch { return tg.notify('❌ Gagal ambil inventory (game offline/maintenance?). Coba lagi.', menuMarkup); }
+      const acct = player.player || player;
+
+      // ---- MANUAL LIST PATH: /sell <kind> ... <priceUsd> [qty] ----
+      if (args.length) {
+        const kind = String(args[0]).toLowerCase();
+        const payload = { itemKind: kind, currency: 'zenko' };
+        if (kind === 'gold') {
+          const priceUsd = Number(args[1]); const qty = Math.floor(Number(args[2]));
+          if (!(priceUsd > 0) || !(qty > 0)) return tg.notify('Format:\n<code>/sell gold &lt;hargaUSD&gt; &lt;qty&gt;</code>', menuMarkup);
+          if (qty > Number(acct.gold || 0)) return tg.notify(`❌ Gold kurang (punya ${fmtN(acct.gold)}).`, menuMarkup);
+          payload.quantity = qty; payload.priceUsd = priceUsd;
+        } else if (kind === 'material') {
+          const ref = args[1]; const priceUsd = Number(args[2]); const qty = Math.floor(Number(args[3]));
+          if (!ref || !(priceUsd > 0) || !(qty > 0)) return tg.notify('Format:\n<code>/sell material &lt;resource&gt; &lt;hargaUSD&gt; &lt;qty&gt;</code>', menuMarkup);
+          const held = (player.materials || []).find((m) => m.material_id === ref);
+          if (!held) return tg.notify(`❌ Material <code>${esc(ref)}</code> tidak ada.`, menuMarkup);
+          if (qty > Number(held.quantity || 0)) return tg.notify(`❌ ${esc(ref)} kurang (punya ${fmtN(held.quantity)}).`, menuMarkup);
+          payload.resource = ref; payload.quantity = qty; payload.priceUsd = priceUsd;
+        } else if (kind === 'creature' || kind === 'egg') {
+          const ref = args[1]; const priceUsd = Number(args[2]);
+          if (!ref || !(priceUsd > 0)) return tg.notify(`Format:\n<code>/sell ${kind} &lt;id&gt; &lt;hargaUSD&gt;</code>`, menuMarkup);
+          const pool = kind === 'creature' ? (player.creatures || []) : (player.eggs || []);
+          const it = pool.find((x) => x.id === ref) || pool.find((x) => String(x.id).startsWith(ref));
+          if (!it) return tg.notify(`❌ ${esc(kind)} id <code>${esc(ref)}</code> tidak ketemu.`, menuMarkup);
+          payload.itemId = it.id; payload.priceUsd = priceUsd;
+        } else {
+          return tg.notify('❌ Jenis tidak dikenal. Pakai: <code>gold</code> / <code>material</code> / <code>creature</code> / <code>egg</code>.', menuMarkup);
+        }
+        const res = await client.marketList(payload).catch((e) => ({ error: e.message }));
+        if (res?.error) return tg.notify(`❌ Gagal jual: <code>${esc(res.error)}</code>`, menuMarkup);
+        return tg.notify([
+          '🏷️ <b>TERPASANG DI MARKET!</b>',
+          `${esc(kind)}${payload.quantity ? ` ×${fmtN(payload.quantity)}` : ''} — <b>${fmtUsd(payload.priceUsd)}</b>`,
+          'Notif otomatis masuk saat terjual. Batal: /listings → /cancel &lt;id&gt;',
+        ].join('\n'), menuMarkup);
+      }
+
+      // ---- INVENTORY VIEW: tap a command, edit harga/qty, kirim ----
+      let matFloor = {};
+      try {
+        const mb = await client.market('material', { sort: 'cheap', limit: 50 });
+        for (const l of (mb?.listings || [])) {
+          const r = l.resource; const u = Number(l.price_usd) / Math.max(1, Number(l.quantity || 1));
+          if (r && Number.isFinite(u) && u > 0) matFloor[r] = Math.min(matFloor[r] ?? Infinity, u);
+        }
+      } catch { /* no market data → placeholder prices */ }
+      const uCre = Number(summary.creature?.floorUnitUsd) || null;
+      const uEgg = Number(summary.egg?.floorUnitUsd) || null;
+      const uGold = Number(summary.gold?.floorUnitUsd) || null;
+      const cPrice = uCre ? (uCre * 0.97).toFixed(2) : '0.03';
+      const eP = uEgg ? (uEgg * 0.97).toFixed(2) : '0.05';
+
+      const lines = ['<b>🏷️ JUAL MANUAL</b>', '━━━━━━━━━━━━━━━━━━━━', '<i>Tap command → edit harga/qty → kirim.</i>', ''];
+
+      const gold = Number(acct.gold || 0);
+      lines.push(`💰 <b>Gold:</b> ${fmtN(gold)}`);
+      if (gold > 1000) {
+        const q = Math.min(gold - 1000, 300000);
+        const unit = uGold ? uGold * 0.97 : 1 / 320000;
+        lines.push(`  <code>/sell gold ${(unit * q).toFixed(2)} ${q}</code>`);
+      }
+
+      const mats = player.materials || [];
+      if (mats.length) {
+        lines.push('', '⛏️ <b>Materials:</b>');
+        for (const m of mats) {
+          const q = Math.min(Number(m.quantity || 0), 2000);
+          const unit = matFloor[m.material_id] ? matFloor[m.material_id] * 0.97 : 0.0001;
+          lines.push(`• ${esc(m.material_id)} ×${fmtN(m.quantity)}`);
+          lines.push(`  <code>/sell material ${esc(m.material_id)} ${(unit * q).toFixed(4)} ${q}</code>`);
+        }
+      }
+
+      const spare = (player.creatures || []).filter((c) => c.rarity === 'Common' && !c.listed && !c.stored).slice(0, 6);
+      lines.push('', `🐾 <b>Creatures</b> (Common — ${spare.length} bisa dijual):`);
+      for (const c of spare) {
+        lines.push(`• ${esc(c.creature_id)} ${esc(c.rarity)}/${esc(c.stage)}`);
+        lines.push(`  <code>/sell creature ${esc(c.id)} ${cPrice}</code>`);
+      }
+
+      const be = (player.eggs || []).filter((e) => e.egg_type === 'basic' && e.status !== 'hatched' && !e.creature_id && !e.listed).slice(0, 3);
+      if (be.length) {
+        lines.push('', `🥚 <b>Basic eggs</b> (${be.length}):`);
+        for (const e of be) lines.push(`  <code>/sell egg ${esc(e.id)} ${eP}</code>`);
+      }
+
+      lines.push('', '📄 Listing aktif: /listings  ·  ❌ Batal: /cancel &lt;id&gt;');
+      return tg.notify(lines.join('\n'), menuMarkup);
+    }
+
     case '/leaderboard': {
       const res = await client.leaderboards().catch((e) => ({ error: e.message }));
       if (res?.error) return tg.notify(`🏆 Failed: <code>${res.error}</code>`, menuMarkup);
