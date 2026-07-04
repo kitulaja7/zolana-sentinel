@@ -6,7 +6,7 @@ import { generateWallet, loadWallet } from './wallet.js';
 import { ZolanaClient } from './client.js';
 import { BotState } from './state.js';
 import { StrategyEngine } from './strategy.js';
-import { TelegramBot, formatGachaCards } from './telegram.js';
+import { TelegramBot, formatGachaCards, eggState } from './telegram.js';
 
 async function main() {
   const once = process.argv.includes('--once');
@@ -601,15 +601,86 @@ async function handleCommand(command, tg, engine, state) {
     case '/listing':
     case '/listings': {
       const res = await client.marketMine().catch((e) => ({ error: e.message }));
-      if (res?.error) return tg.notify(`📄 Failed: <code>${res.error}</code>`, menuMarkup);
-      const items = Array.isArray(res?.listings) ? res.listings : [];
-      if (!items.length) return tg.notify('📄 No active listings.', menuMarkup);
-      const lines = ['<b>📄 LISTING SAYA</b>', '━━━━━━━━━━━━━━━━━━━━'];
-      for (const it of items.slice(0, 15)) {
+      if (res?.error) return tg.notify(`📄 Failed: <code>${esc(res.error)}</code>`, menuMarkup);
+      const items = (Array.isArray(res?.listings) ? res.listings : []).filter((it) => !it.status || it.status === 'active');
+      if (!items.length) return tg.notify('📄 <b>No active listings.</b>\nList something with the 🏷️ Sell menu — /sell.', menuMarkup);
+      const lines = ['<b>📄 MY LISTINGS</b>', '━━━━━━━━━━━━━━━━━━━━', '<i>Tap ❌ below to cancel one.</i>', ''];
+      const rows = [];
+      for (const it of items.slice(0, 12)) {
+        const name = marketName(it);
         const p = it.price_usd != null ? `$${it.price_usd}` : (it.price_gems != null ? `${it.price_gems}💎` : '?');
-        lines.push(`• ${esc(it.item_kind || 'item')} — ${p}\n  <code>/cancel ${esc(it.id)}</code>`);
+        const qty = it.quantity ? ` ×${Number(it.quantity).toLocaleString('en-US')}` : '';
+        lines.push(`• ${esc(name)}${qty} — <b>${p}</b>`);
+        rows.push([{ text: `❌ ${name}${qty} · ${p}`.slice(0, 45), callback_data: `/cancel ${it.id}` }]);
       }
-      return tg.notify(lines.join('\n'), menuMarkup);
+      rows.push([{ text: '🏷️ Sell more', callback_data: '/sell' }, { text: '⬅️ Back', callback_data: '/market' }]);
+      return tg.notify(lines.join('\n'), { reply_markup: { inline_keyboard: rows } });
+    }
+
+    case '/hatch': {
+      let player;
+      try { player = await client.loadPlayer(); }
+      catch { return tg.notify('❌ Could not load eggs (game offline?). Try again.', menuMarkup); }
+      const eggs = (player.eggs || []).filter((e) => e.status !== 'hatched' && !e.hatched && !e.creature_id && !e.listed);
+      if (!eggs.length) return tg.notify('🥚 <b>No eggs.</b>\nGet eggs from breeding, gacha, or the /store.', menuMarkup);
+      const now = Date.now();
+      const withState = eggs.map((e) => ({ e, s: eggState(e, now) }));
+      const ready = withState.filter((x) => x.s.ready);
+      const cooking = withState.filter((x) => !x.s.ready && !x.s.idle);
+      const idle = withState.filter((x) => x.s.idle);
+      const incUsed = eggs.filter((e) => e.status === 'incubating').length;
+      const INCUBATOR_SLOTS = 6;
+      const freeSlots = Math.max(0, INCUBATOR_SLOTS - incUsed);
+
+      const lines = ['<b>🥚 HATCHERY</b>', '━━━━━━━━━━━━━━━━━━━━', `🔧 Incubator: <b>${incUsed}/${INCUBATOR_SLOTS}</b> slots busy`];
+      if (ready.length) lines.push(`⏳ <b>${ready.length} ready</b> to hatch now`);
+      for (const { s } of cooking.slice(0, 6)) lines.push(`${s.emoji} ${s.type} — ${s.label} · <i>${s.potential}</i>`);
+      if (idle.length) lines.push(freeSlots ? `💤 ${idle.length} idle — tap Incubate to start` : `💤 ${idle.length} idle — incubator full, wait for one to hatch`);
+      lines.push('', '<i>Hatch needs roster room. If "Squad full", sell a creature via /sell first.</i>');
+
+      const rows = [];
+      if (ready.length) rows.push([{ text: `🐣 Hatch ALL ready (${ready.length})`, callback_data: '/hx all' }]);
+      for (const { e, s } of ready.slice(0, 6)) rows.push([{ text: `🐣 ${s.emoji} ${s.type} → ${s.potential}`.slice(0, 45), callback_data: `/hx ${e.id}` }]);
+      for (const { e, s } of idle.slice(0, freeSlots).slice(0, 6)) rows.push([{ text: `🥚 Incubate ${s.emoji} ${s.type}`.slice(0, 45), callback_data: `/ic ${e.id}` }]);
+      rows.push([{ text: '🎒 Inventory', callback_data: '/inventory' }, { text: '⬅️ Back', callback_data: '/start' }]);
+      return tg.notify(lines.join('\n'), { reply_markup: { inline_keyboard: rows } });
+    }
+
+    // Hatch a ready egg (or all ready eggs).
+    case '/hx': {
+      const target = args[0];
+      let player;
+      try { player = await client.loadPlayer(); }
+      catch { return tg.notify('❌ Could not load eggs. Try again.', menuMarkup); }
+      const now = Date.now();
+      const ready = (player.eggs || []).filter((e) => e.status !== 'hatched' && !e.hatched && !e.creature_id && eggState(e, now).ready);
+      const targets = target === 'all' ? ready : ready.filter((e) => e.id === target);
+      if (!targets.length) return tg.notify("🥚 That egg isn't ready (or already hatched). Open /hatch.", menuMarkup);
+      const results = [];
+      for (const e of targets.slice(0, 6)) {
+        const res = await client.hatch(e.id).catch((err) => ({ error: err.message }));
+        if (res?.error) {
+          const full = /squad full|make room/i.test(res.error);
+          results.push(`❌ ${esc(e.egg_type)}: ${full ? 'roster full — sell one via /sell first' : esc(res.error)}`);
+          if (full) break;
+        } else {
+          const cr = res?.creature || res?.card || res || {};
+          results.push(`🐣 <b>${esc(cr.rarity || '')} ${esc(cr.creature_id || cr.name || e.egg_type)}</b> hatched!`);
+        }
+      }
+      return tg.notify(['<b>🐣 HATCH RESULT</b>', '━━━━━━━━━━━━━━━━━━━━', ...results, '', 'See it in /creatures.'].join('\n'), menuMarkup);
+    }
+
+    // Start incubating an idle egg.
+    case '/ic': {
+      const id = args[0];
+      if (!id) return tg.notify('❌ No egg selected. Open /hatch.', menuMarkup);
+      const res = await client.incubate(id).catch((err) => ({ error: err.message }));
+      if (res?.error) {
+        const full = /incubator.*busy|slots are busy/i.test(res.error);
+        return tg.notify(full ? '❌ All incubator slots are busy — wait for one to hatch.' : `❌ Incubate failed: <code>${esc(res.error)}</code>`, menuMarkup);
+      }
+      return tg.notify('🥚 <b>Incubation started!</b>\nCheck the timer with /hatch.', menuMarkup);
     }
 
     case '/cancel': {
@@ -881,6 +952,13 @@ function sellUnitFloor(summary, kind, matFloor, resource) {
   if (kind === 'gold') { const f = Number(summary?.gold?.floorUnitUsd); return f > 0 ? f : 1 / 320000; }
   const f = Number(summary?.[kind]?.floorUnitUsd);
   return f > 0 ? f : (SELL_FALLBACK[kind] || 0.05);
+}
+
+// Human name for a market listing row (from its embedded item, per kind).
+function marketName(it) {
+  const i = it.item || {};
+  return i.creature_id || (i.egg_type ? `${i.egg_type} egg` : null)
+    || i.base_id || i.cosmetic_id || it.resource || it.item_kind || 'item';
 }
 
 // Human label for an inventory item, per kind.

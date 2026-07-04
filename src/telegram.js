@@ -32,6 +32,31 @@ const RARITY_EMOJI = {
   Common: '⚪', Uncommon: '🟢', Rare: '🔵', Epic: '🟣', Legendary: '🟡', Mythical: '🔴',
 };
 
+// Egg type → display emoji + what rarity it can hatch into (rarity is decided at hatch).
+export const EGG_META = {
+  basic: { emoji: '🥚', potential: 'Common' },
+  forest: { emoji: '🌲', potential: 'up to Rare' },
+  mystery: { emoji: '🌟', potential: 'Legendary' },
+  breeding: { emoji: '🧬', potential: 'inherited from parents' },
+  premium: { emoji: '💠', potential: 'Rare–Legendary' },
+  golden: { emoji: '🥇', potential: 'Epic–Legendary' },
+};
+
+// Derive an egg's live state: ready to hatch, still incubating (with countdown), or idle.
+export function eggState(egg, now = Date.now()) {
+  const type = egg?.egg_type || 'egg';
+  const meta = EGG_META[type] || { emoji: '🥚', potential: '?' };
+  const readyAt = egg?.hatch_ready_at ? new Date(egg.hatch_ready_at).getTime() : null;
+  const incubating = egg?.status === 'incubating' && readyAt != null;
+  if (incubating && readyAt <= now) return { type, ...meta, ready: true, idle: false, label: '⏳ READY' };
+  if (incubating) {
+    const m = Math.max(1, Math.ceil((readyAt - now) / 60000));
+    const t = m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`;
+    return { type, ...meta, ready: false, idle: false, label: `⏰ ${t} left` };
+  }
+  return { type, ...meta, ready: false, idle: true, label: '💤 not incubating' };
+}
+
 // Format a gacha result's `cards` array (what was won) into HTML lines.
 export function formatGachaCards(gacha) {
   const cards = Array.isArray(gacha?.cards) ? gacha.cards : [];
@@ -115,6 +140,8 @@ export class TelegramBot {
         ],
         [
           { text: '🧬 Breed', callback_data: '/breed' },
+          { text: '🐣 Hatch', callback_data: '/hatch' },
+          { text: '🎒 Inventory', callback_data: '/inventory' },
         ],
         [
           { text: '🎰 Gacha', callback_data: '/gacha' },
@@ -214,6 +241,7 @@ export class TelegramBot {
       { command: 'dungeon', description: '🏰 Start/claim dungeon (raid)' },
       { command: 'evolve', description: '🧬 Evolve all eligible creatures' },
       { command: 'breed', description: '🧬 Breed Adult+ (higher rarity)' },
+      { command: 'hatch', description: '🐣 Hatch/incubate eggs (pick from list)' },
       { command: 'relic', description: '💍 Craft+equip relic' },
       { command: 'epoch', description: '🌌 Epoch donate → $ZOLANA rebate' },
       { command: 'inventory', description: '🎒 Bag: creatures/eggs/relics/materials' },
@@ -423,7 +451,27 @@ export class TelegramBot {
       `   ${rarityLine}`,
     ];
     if (variantLine) lines.push(`   ✨ Variants: ${variantLine}`);
-    lines.push(`🥚 Eggs aktif: <b>${eggs.length}</b>`);
+
+    // Eggs — detailed: type, ready/incubating/idle, and what rarity each can hatch into.
+    if (eggs.length) {
+      const now = Date.now();
+      const states = eggs.map((e) => eggState(e, now));
+      const readyN = states.filter((s) => s.ready).length;
+      const idleN = states.filter((s) => s.idle).length;
+      lines.push(HR, `🥚 <b>Eggs (${eggs.length} active)</b> — ${readyN} ready · ${idleN} idle`);
+      const agg = {};
+      for (const s of states) {
+        const k = `${s.emoji}|${s.type}|${s.label}|${s.potential}`;
+        agg[k] = (agg[k] || 0) + 1;
+      }
+      for (const [k, n] of Object.entries(agg)) {
+        const [emoji, type, label, pot] = k.split('|');
+        lines.push(`   ${emoji} ${esc(type)} ×${n} · ${label} · <i>${esc(pot)}</i>`);
+      }
+      if (readyN) lines.push('   → <b>/hatch</b> to hatch ready eggs');
+    } else {
+      lines.push(`🥚 Eggs: <b>0 active</b>`);
+    }
 
     if (relics.length) {
       lines.push(HR, `💍 <b>Relics (${relics.length})</b>`);
@@ -460,7 +508,7 @@ export class TelegramBot {
       const spot = placed(c) ? '🌱' : '💤';
       lines.push(`${spot} ${rar} <b>${esc(c.creature_id)}</b> · ${esc(c.rarity)}${varTag} · ${esc(c.stage)} L${esc(c.level ?? 1)} · ${num(cph(c))}/h`);
     }
-    if (sorted.length > 30) lines.push(`… +${sorted.length - 30} lagi`);
+    if (sorted.length > 30) lines.push(`… +${sorted.length - 30} more`);
     lines.push(HR, '🌱=farming · 💤=idle · /h = gold per hour');
     return lines.join('\n');
   }
