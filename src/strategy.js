@@ -602,6 +602,9 @@ export class StrategyEngine {
     const targets = creatures(player)
       .map((c) => ({ c, info: evolveInfo(c) }))
       .filter((x) => x.info)
+      // Never spend gold evolving Common creatures — they're sacrifice/sell fodder,
+      // not keepers. Evolve gold is reserved for Uncommon+ (worth growing to Elder).
+      .filter((x) => (x.c.rarity || 'Common') !== 'Common')
       .sort((a, b) =>
         STAGES.indexOf(b.info.stage) - STAGES.indexOf(a.info.stage)
         || Number(b.c.creature_xp || 0) - Number(a.c.creature_xp || 0));

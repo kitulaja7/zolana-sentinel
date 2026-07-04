@@ -249,7 +249,7 @@ async function handleCommand(command, tg, engine, state) {
       const player = await client.loadPlayer().catch(() => null);
       state.data.cooldowns.evolve = 0;
       await engine.evolveBest(player);
-      return tg.notify('🧬 Evolving all eligible creatures (advanced-first, within gold budget).', menuMarkup);
+      return tg.notify('🧬 Evolving eligible <b>Uncommon+</b> creatures (Common skipped · advanced-first · within gold budget).', menuMarkup);
     }
 
     case '/quests': {
