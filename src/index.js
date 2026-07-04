@@ -160,7 +160,7 @@ async function handleCommand(command, tg, engine, state) {
       if (checked) lines.push('', `<i>Updated ${checked.toISOString().slice(11, 16)} UTC</i>`);
       const rows = [
         [{ text: '🛒 Buy Items', callback_data: '/mbuy' }, { text: '🏷️ Sell My Items', callback_data: '/sell' }],
-        [{ text: '📄 My Listings', callback_data: '/listings' }, { text: '💎 Buy Gems', callback_data: '/buygems' }],
+        [{ text: '📄 My Listings', callback_data: '/listings' }, { text: '💎 Gems', callback_data: '/gems' }],
         [{ text: '⬅️ Back', callback_data: '/start' }],
       ];
       return tg.notify(lines.join('\n'), { reply_markup: { inline_keyboard: rows } });
@@ -526,6 +526,23 @@ async function handleCommand(command, tg, engine, state) {
         '━━━━━━━━━━━━━━━━━━━━',
         cards || 'Result saved (check /inventory).',
       ].filter(Boolean).join('\n'), menuMarkup);
+    }
+
+    case '/gems': {
+      // Gems hub: choose Buy (pay $ZOLANA) or Sell (list your spare gems on the market).
+      let gems = null;
+      try { gems = Number((await client.loadPlayer())?.player?.gems); } catch { /* best-effort */ }
+      return tg.notify([
+        '<b>💎 GEMS</b>',
+        '━━━━━━━━━━━━━━━━━━━━',
+        gems != null ? `Your balance: <b>${esc(gems)}</b> gems` : '',
+        'Buy gems with $ZOLANA, or sell your spare gems on the market.',
+      ].filter(Boolean).join('\n'), {
+        reply_markup: { inline_keyboard: [
+          [{ text: '🛒 Buy Gems', callback_data: '/buygems' }, { text: '🏷️ Sell Gems', callback_data: '/sp x all' }],
+          [{ text: '⬅️ Back', callback_data: '/market' }],
+        ] },
+      });
     }
 
     case '/buygems': {
@@ -978,7 +995,7 @@ async function handleCommand(command, tg, engine, state) {
 
     // Pick an item to sell: /sp <t> <ref>  (t = g|m|k|r|c|e)
     case '/sp': {
-      const map = { g: 'gold', m: 'material', k: 'cosmetic', r: 'relic', c: 'creature', e: 'egg' };
+      const map = { g: 'gold', m: 'material', k: 'cosmetic', r: 'relic', c: 'creature', e: 'egg', x: 'gem' };
       const kind = map[args[0]];
       const ref = args[1];
       if (!kind || !ref) return tg.notify('❌ Bad selection. Open /sell again.', menuMarkup);
@@ -994,6 +1011,11 @@ async function handleCommand(command, tg, engine, state) {
         if (gold <= 1000) return tg.notify('❌ Not enough gold to sell.', menuMarkup);
         needsQty = true; maxQty = gold; qtyDefault = Math.min(gold - 1000, 300000);
         unit = sellUnitFloor(summary, 'gold') * 0.97; name = 'Gold';
+      } else if (kind === 'gem') {
+        const gems = Number(acct.gems || 0);
+        if (gems <= 0) return tg.notify('❌ You have no gems to sell.', menuMarkup);
+        needsQty = true; maxQty = gems; qtyDefault = gems;
+        unit = sellUnitFloor(summary, 'gem') * 0.97; name = 'Gems';
       } else if (kind === 'material') {
         const held = (player.materials || []).find((m) => m.material_id === ref);
         if (!held) return tg.notify(`❌ Material <code>${esc(ref)}</code> not found.`, menuMarkup);

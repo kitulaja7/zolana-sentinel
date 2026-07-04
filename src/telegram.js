@@ -150,7 +150,7 @@ export class TelegramBot {
         ],
         [
           { text: '🎰 Gacha', callback_data: '/gacha' },
-          { text: '💎 Buy Gems', callback_data: '/buygems' },
+          { text: '💎 Gems', callback_data: '/gems' },
           { text: '🛒 Store', callback_data: '/store' },
         ],
         [
