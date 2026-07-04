@@ -259,11 +259,128 @@ async function handleCommand(command, tg, engine, state) {
       return tg.notify('📜 Claimed all completed quests (+150 account XP each).', menuMarkup);
     }
 
+    // 🧬 Breed — manual picker. Both parents must be Adult/Elder + idle + off cooldown.
+    // Offspring rarity = min(parent rarity)+1 (up to Legendary), delivered as a Mystery Egg.
     case '/breed': {
-      const player = await client.loadPlayer().catch(() => null);
-      state.data.cooldowns.breed = 0;
-      await engine.breedForRarity(player);
-      return tg.notify('🧬 Breeding the 2 strongest Adult/Elder creatures (chance of higher rarity → Legendary/Mythical).', menuMarkup);
+      let player;
+      try { player = await client.loadPlayer(); }
+      catch { return tg.notify('❌ Could not load creatures (game offline?). Try again.', menuMarkup); }
+      const now = Date.now();
+      const breedables = (player.creatures || []).filter((c) => isBreedable(c, now))
+        .sort((a, b) => creatureValue(b) - creatureValue(a));
+      const gold = Number((player.player || {}).gold || 0);
+
+      if (breedables.length < 2) {
+        const adults = (player.creatures || []).filter((c) => ['Adult', 'Elder'].includes(c.stage)).length;
+        return tg.notify([
+          '<b>🧬 BREED</b>', '━━━━━━━━━━━━━━━━━━━━',
+          `You need <b>2 idle Adult/Elder</b> creatures. Ready now: <b>${breedables.length}</b>.`,
+          adults > breedables.length ? `<i>(${adults} are Adult+ but placed/raiding/on cooldown — free them first.)</i>` : '',
+          '', '🌱 <b>How to get Adults:</b> keep creatures placed/raiding so they gain XP and evolve (Baby→Juvenile→Adult). Auto-evolve is on.',
+          '💡 Offspring = <b>one rarity above the weaker parent</b> (up to Legendary), as a Mystery Egg.',
+        ].filter(Boolean).join('\n'), menuMarkup);
+      }
+
+      // Recommend the best pair (highest offspring tier, then success, then cost).
+      const ranked = bestBreedPairs(breedables);
+      const lines = ['<b>🧬 BREED — pick parent 1</b>', '━━━━━━━━━━━━━━━━━━━━', `🪙 Gold: <b>${short(gold)}</b>`];
+      const rows = [];
+      if (ranked.length) {
+        const top = ranked[0];
+        const p = top.plan;
+        lines.push('', `⭐ <b>Best pair:</b> ${RARITY_EMOJI2[top.a.rarity]}${esc(top.a.creature_id)} × ${RARITY_EMOJI2[top.b.rarity]}${esc(top.b.creature_id)}`,
+          `   → ${RARITY_EMOJI2[p.result]} <b>${p.result}</b>${p.hybrid ? ' (hybrid)' : ''} · ${Math.round(p.success * 100)}% · ${short(p.cost)} gold`);
+        rows.push([{ text: `⭐ Best: ${top.a.creature_id}×${top.b.creature_id} → ${p.result}`.slice(0, 55), callback_data: `/bx ${top.a.id} ${top.b.id}` }]);
+      }
+      lines.push('', '<i>…or pick parent 1 yourself:</i>');
+      for (const c of breedables.slice(0, 8)) {
+        rows.push([{ text: `${RARITY_EMOJI2[c.rarity]} ${c.creature_id} ${c.rarity}/${c.stage} L${c.level}`.slice(0, 55), callback_data: `/bp ${c.id}` }]);
+      }
+      rows.push([{ text: '⬅️ Back', callback_data: '/start' }]);
+      return tg.notify(lines.join('\n'), { reply_markup: { inline_keyboard: rows } });
+    }
+
+    // Pick parent 2 (after parent 1 chosen).
+    case '/bp': {
+      const idA = args[0];
+      let player;
+      try { player = await client.loadPlayer(); }
+      catch { return tg.notify('❌ Could not load creatures. Try again.', menuMarkup); }
+      const now = Date.now();
+      const a = (player.creatures || []).find((c) => c.id === idA);
+      if (!a || !isBreedable(a, now)) return tg.notify('❌ That creature can\'t breed now. Open /breed.', menuMarkup);
+      const others = (player.creatures || []).filter((c) => c.id !== idA && isBreedable(c, now))
+        .sort((x, y) => creatureValue(y) - creatureValue(x));
+      if (!others.length) return tg.notify('❌ No second breedable creature available. Open /breed.', menuMarkup);
+      const rows = others.slice(0, 10).map((c) => {
+        const p = breedPlan(a, c);
+        const tag = p ? `→ ${p.result} ${Math.round(p.success * 100)}%` : '✖ too high';
+        return [{ text: `${RARITY_EMOJI2[c.rarity]} ${c.creature_id} L${c.level} ${tag}`.slice(0, 55), callback_data: `/bx ${idA} ${c.id}` }];
+      });
+      rows.push([{ text: '⬅️ Back', callback_data: '/breed' }]);
+      return tg.notify([
+        `<b>🧬 BREED — parent 1: ${RARITY_EMOJI2[a.rarity]}${esc(a.creature_id)}</b>`,
+        '━━━━━━━━━━━━━━━━━━━━', 'Pick parent 2:',
+      ].join('\n'), { reply_markup: { inline_keyboard: rows } });
+    }
+
+    // Show the breed plan for a chosen pair + confirm button.
+    case '/bx': {
+      const [idA, idB] = args;
+      let player;
+      try { player = await client.loadPlayer(); }
+      catch { return tg.notify('❌ Could not load creatures. Try again.', menuMarkup); }
+      const now = Date.now();
+      const a = (player.creatures || []).find((c) => c.id === idA);
+      const b = (player.creatures || []).find((c) => c.id === idB);
+      if (!a || !b || !isBreedable(a, now) || !isBreedable(b, now)) return tg.notify('❌ One parent is no longer available. Open /breed.', menuMarkup);
+      const plan = breedPlan(a, b);
+      if (!plan) return tg.notify('❌ Two Legendaries can\'t breed higher (Legendary is the breed cap). Pick a different pair.', menuMarkup);
+      const gold = Number((player.player || {}).gold || 0);
+      const afford = gold >= plan.cost;
+      const mins = Math.round(plan.timeSec / 60);
+      const lines = [
+        '<b>🧬 BREED PLAN</b>', '━━━━━━━━━━━━━━━━━━━━',
+        `👪 ${RARITY_EMOJI2[a.rarity]}${esc(a.creature_id)} ${a.rarity} × ${RARITY_EMOJI2[b.rarity]}${esc(b.creature_id)} ${b.rarity}`,
+        `🥚 Offspring: ${RARITY_EMOJI2[plan.result]} <b>${plan.result}</b>${plan.hybrid ? ' <i>(hybrid species)</i>' : ''} — as a Mystery Egg`,
+        `🎲 Success: <b>${Math.round(plan.success * 100)}%</b>  ${plan.success < 1 ? '<i>(fail = 50% gold back)</i>' : ''}`,
+        `💰 Cost: <b>${short(plan.cost)}</b> gold ${afford ? '✅' : `❌ (you have ${short(gold)})`}`,
+        `⏳ Hatch time: ~${mins} min`,
+      ];
+      const rows = [];
+      if (afford) rows.push([{ text: `♥ Breed → ${plan.result} (${Math.round(plan.success * 100)}%)`, callback_data: `/bgo ${idA} ${idB}` }]);
+      rows.push([{ text: '⬅️ Back', callback_data: '/breed' }, { text: '✖️ Cancel', callback_data: '/start' }]);
+      return tg.notify(lines.join('\n'), { reply_markup: { inline_keyboard: rows } });
+    }
+
+    // Execute the breed.
+    case '/bgo': {
+      const [idA, idB] = args;
+      let player;
+      try { player = await client.loadPlayer(); }
+      catch { return tg.notify('❌ Could not load creatures. Try again.', menuMarkup); }
+      const now = Date.now();
+      const a = (player.creatures || []).find((c) => c.id === idA);
+      const b = (player.creatures || []).find((c) => c.id === idB);
+      if (!a || !b || !isBreedable(a, now) || !isBreedable(b, now)) return tg.notify('❌ A parent is no longer available. Open /breed.', menuMarkup);
+      const plan = breedPlan(a, b);
+      if (!plan) return tg.notify('❌ That pair can\'t breed. Open /breed.', menuMarkup);
+      await tg.notify(`🧬 Breeding <b>${esc(a.creature_id)}</b> × <b>${esc(b.creature_id)}</b>…`);
+      const res = await client.breed(idA, idB).catch((e) => ({ error: e.message }));
+      if (res?.error) return tg.notify(`❌ Breed failed: <code>${esc(res.error)}</code>`, menuMarkup);
+      state.data.cooldowns.breed = 0; state.count('breed'); state.save();
+      const ok = res?.success !== false;
+      logHistory(state, ok
+        ? `🧬 Bred ${a.creature_id}×${b.creature_id} → ${plan.result} Mystery Egg`
+        : `🧬 Breed ${a.creature_id}×${b.creature_id} FAILED (50% gold back)`);
+      return tg.notify(ok ? [
+        '<b>🧬 BREEDING SUCCESS!</b>', '━━━━━━━━━━━━━━━━━━━━',
+        `🥚 A <b>${plan.result}</b> Mystery Egg landed in your nest!`,
+        'Hatch it from 🐣 /hatch when the timer\'s done.',
+      ].join('\n') : [
+        '<b>🧬 Breed didn\'t take</b>', 'The roll failed — you got 50% of the gold back + trainer XP.',
+        'Try a lower-tier pair for a safer breed.',
+      ].join('\n'), { reply_markup: { inline_keyboard: [[{ text: '🧬 Breed again', callback_data: '/breed' }, { text: '🐣 Hatch', callback_data: '/hatch' }]] } });
     }
 
     case '/relic': {
@@ -1196,6 +1313,47 @@ function creatureValue(c) {
 }
 function isPlacedC(c) {
   return c.placed || (c.plot_x !== null && c.plot_x !== undefined);
+}
+
+// --- Breed mechanics (RE'd from the game bundle) ---
+// parentTier = MIN of both parents' rarity tier; offspring tier = parentTier+1 (capped
+// at Legendary). Success/cost/time come from this table (keyed by parentTier 0..3).
+// Two Legendaries can't breed up (no Mythical from breeding). Different species → hybrid.
+const BREED_TIER = { Common: 0, Uncommon: 1, Rare: 2, Epic: 3, Legendary: 4, Mythical: 5 };
+const BREED_TABLE = [
+  { result: 'Uncommon', success: 1.0, cost: 3000, timeSec: 1800 },
+  { result: 'Rare', success: 0.85, cost: 10000, timeSec: 3600 },
+  { result: 'Epic', success: 0.6, cost: 30000, timeSec: 7200 },
+  { result: 'Legendary', success: 0.25, cost: 80000, timeSec: 14400 },
+];
+const BREED_COOLDOWN_MS_UI = 60 * 60 * 1000;
+// Is a creature eligible to breed right now? (Adult/Elder, idle, off cooldown.)
+function isBreedable(c, now = Date.now()) {
+  if (!['Adult', 'Elder'].includes(c.stage)) return false;
+  if (c.listed || c.stored || c.run_id || isPlacedC(c)) return false;
+  const last = Date.parse(c.last_breed_time || '');
+  return !Number.isFinite(last) || (now - last) >= BREED_COOLDOWN_MS_UI;
+}
+// Breed outcome plan for a pair, or null if the pair can't breed up (both Legendary+).
+function breedPlan(a, b) {
+  const parentTier = Math.min(BREED_TIER[a.rarity] ?? 0, BREED_TIER[b.rarity] ?? 0);
+  if (parentTier > 3) return null; // two Legendary+ → no higher tier exists
+  const row = BREED_TABLE[parentTier];
+  return { ...row, parentTier, hybrid: a.creature_id !== b.creature_id };
+}
+// Rank all breedable pairs: highest offspring tier first, then success, then lowest cost.
+function bestBreedPairs(breedables) {
+  const pairs = [];
+  for (let i = 0; i < breedables.length; i++) {
+    for (let j = i + 1; j < breedables.length; j++) {
+      const plan = breedPlan(breedables[i], breedables[j]);
+      if (plan) pairs.push({ a: breedables[i], b: breedables[j], plan });
+    }
+  }
+  return pairs.sort((x, y) =>
+    (BREED_TIER[y.plan.result] - BREED_TIER[x.plan.result])
+    || (y.plan.success - x.plan.success)
+    || (x.plan.cost - y.plan.cost));
 }
 
 // Compact number for button labels: 12345 -> "12.3k".
