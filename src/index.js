@@ -247,9 +247,56 @@ async function handleCommand(command, tg, engine, state) {
 
     case '/evolve': {
       const player = await client.loadPlayer().catch(() => null);
-      state.data.cooldowns.evolve = 0;
-      await engine.evolveBest(player);
-      return tg.notify('🧬 Evolving eligible <b>Uncommon+</b> creatures (Common skipped · advanced-first · within gold budget).', menuMarkup);
+      if (!player) return tg.notify('❌ Could not load creatures (game offline?). Try again.', menuMarkup);
+      const now = Date.now();
+      // Only creatures the rarity gate actually allows to evolve (Common skipped,
+      // Adult→Elder Epic/Legendary+ only) — so the list matches what the button does.
+      const all = (player.creatures || [])
+        .map((c) => ({ c, st: evolveStatus(c, now) }))
+        .filter((x) => x.st);
+      const eligible = all.filter((x) => evolveAllowedUI(x.st.stage, x.c.rarity));
+      const skippedN = all.length - eligible.length;
+
+      if (args[0] === 'GO') {
+        state.data.cooldowns.evolve = 0;
+        await engine.evolveBest(player);
+        return tg.notify('🧬 Evolving all <b>ready</b> creatures now (Common skipped · Adult→Elder Epic/Legendary only · within gold budget).', menuMarkup);
+      }
+
+      if (!eligible.length) {
+        return tg.notify([
+          '<b>🧬 EVOLVE</b>', '━━━━━━━━━━━━━━━━━━━━',
+          'No eligible creatures pending evolution.',
+          skippedN ? `<i>(${skippedN} eligible-by-timer but skipped by rarity rule.)</i>` : '',
+          '', '🌱 Keep creatures placed/raiding so they gain XP and climb Baby→Juvenile→Adult→Elder.',
+          '💡 Rule: Common never evolves · Adult→Elder = <b>Epic/Legendary only</b>.',
+        ].filter(Boolean).join('\n'), menuMarkup);
+      }
+
+      // Advanced-first (closest to Elder), then soonest-ready.
+      eligible.sort((a, b) =>
+        (EVOLVE_STAGES.indexOf(b.st.stage) - EVOLVE_STAGES.indexOf(a.st.stage))
+        || (a.st.remainSec - b.st.remainSec));
+      const gold = Number((player.player || {}).gold || 0);
+      const readyN = eligible.filter((x) => x.st.timeReady || x.st.xpReady).length;
+      const lines = [
+        '<b>🧬 EVOLVE STATUS</b>', '━━━━━━━━━━━━━━━━━━━━',
+        `🪙 Gold: <b>${short(gold)}</b>   ✅ Ready: <b>${readyN}</b>/${eligible.length}`, '',
+      ];
+      for (const { c, st } of eligible.slice(0, 15)) {
+        let when;
+        if (st.timeReady) when = '✅ <b>Ready now</b>';
+        else if (st.xpReady) when = `⚡ XP-skip ready (${st.xp}/${st.skipXp} xp)`;
+        else when = `⏳ <b>${fmtDur(st.remainSec)}</b> · xp ${st.xp}/${st.skipXp}`;
+        lines.push(`${RARITY_EMOJI2[c.rarity] || ''} <b>${esc(c.creature_id)}</b> ${c.rarity} · ${st.stage}→${st.next}`);
+        lines.push(`   ${when} · cost ${short(st.cost)} gold`);
+      }
+      if (eligible.length > 15) lines.push(`<i>…and ${eligible.length - 15} more</i>`);
+      if (skippedN) lines.push('', `<i>⚪ ${skippedN} skipped by rarity rule (Common, or non-Epic/Leg at Adult).</i>`);
+      const rows = [];
+      if (readyN) rows.push([{ text: `🧬 Evolve ${readyN} ready now`, callback_data: '/evolve GO' }]);
+      rows.push([{ text: '🔄 Refresh', callback_data: '/evolve' }, { text: '⬅️ Back', callback_data: '/start' }]);
+      return tg.notify(lines.join('\n'), { reply_markup: { inline_keyboard: rows } });
     }
 
     case '/quests': {
@@ -1354,6 +1401,43 @@ function bestBreedPairs(breedables) {
     (BREED_TIER[y.plan.result] - BREED_TIER[x.plan.result])
     || (y.plan.success - x.plan.success)
     || (x.plan.cost - y.plan.cost));
+}
+
+// --- Evolve status (mirrors strategy.js STAGE_CFG + rarity gate) ---
+const EVOLVE_STAGES = ['Baby', 'Juvenile', 'Adult', 'Elder'];
+const EVOLVE_CFG = {
+  Baby: { durationSec: 7200, cost: 5000, skipXp: 100 },
+  Juvenile: { durationSec: 21600, cost: 25000, skipXp: 250 },
+  Adult: { durationSec: 43200, cost: 125000, skipXp: 500 },
+};
+// Same rule the autopilot uses: Common never evolves; Adult→Elder = Epic/Legendary+ only.
+function evolveAllowedUI(stage, rarity) {
+  const tier = BREED_TIER[rarity] ?? 0;
+  if (stage === 'Adult') return tier >= 3;
+  return tier >= 1;
+}
+// Human-readable countdown: 5400 -> "1h 30m".
+function fmtDur(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec / 3600); const m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m`;
+  return `${sec}s`;
+}
+// Evolve state for one creature (stage, gold cost, seconds until timer, xp-skip readiness),
+// or null if Elder/terminal.
+function evolveStatus(c, now = Date.now()) {
+  const stage = EVOLVE_STAGES.includes(c.stage) ? c.stage : 'Baby';
+  if (stage === 'Elder') return null;
+  const cfg = EVOLVE_CFG[stage];
+  const startedAt = Date.parse(c.stage_started_at || c.created_at || '');
+  const elapsed = Number.isFinite(startedAt) ? (now - startedAt) / 1000 : 0;
+  const remainSec = Math.max(0, cfg.durationSec - elapsed);
+  const xp = Number(c.creature_xp ?? c.xp ?? 0);
+  return {
+    stage, next: EVOLVE_STAGES[EVOLVE_STAGES.indexOf(stage) + 1], cost: cfg.cost,
+    remainSec, timeReady: remainSec <= 0, xp, skipXp: cfg.skipXp, xpReady: xp >= cfg.skipXp,
+  };
 }
 
 // Compact number for button labels: 12345 -> "12.3k".

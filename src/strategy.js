@@ -63,6 +63,15 @@ const MATERIAL_RESERVE = {
 };
 
 const STAGES = ['Baby', 'Juvenile', 'Adult', 'Elder'];
+const RARITY_TIER = { Common: 0, Uncommon: 1, Rare: 2, Epic: 3, Legendary: 4, Mythical: 5 };
+// Minimum rarity tier allowed to evolve FROM each stage. Common is never evolved
+// (fodder). Adult→Elder is a 125k gold sink, so it's reserved for Epic/Legendary+
+// only — the rarities actually worth a battle-ready Elder.
+function evolveAllowed(stage, rarity) {
+  const tier = RARITY_TIER[rarity] ?? 0;
+  if (stage === 'Adult') return tier >= 3; // Adult→Elder: Epic/Legendary+ only
+  return tier >= 1;                         // Baby/Juvenile→next: Uncommon+ (skip Common)
+}
 const STAGE_CFG = {
   Baby: { durationSec: 7200, evolveCost: 5000, skipXp: 100 },
   Juvenile: { durationSec: 21600, evolveCost: 25000, skipXp: 250 },
@@ -602,9 +611,8 @@ export class StrategyEngine {
     const targets = creatures(player)
       .map((c) => ({ c, info: evolveInfo(c) }))
       .filter((x) => x.info)
-      // Never spend gold evolving Common creatures — they're sacrifice/sell fodder,
-      // not keepers. Evolve gold is reserved for Uncommon+ (worth growing to Elder).
-      .filter((x) => (x.c.rarity || 'Common') !== 'Common')
+      // Rarity gate: Common never evolves; Adult→Elder only for Epic/Legendary+.
+      .filter((x) => evolveAllowed(x.info.stage, x.c.rarity))
       .sort((a, b) =>
         STAGES.indexOf(b.info.stage) - STAGES.indexOf(a.info.stage)
         || Number(b.c.creature_xp || 0) - Number(a.c.creature_xp || 0));
