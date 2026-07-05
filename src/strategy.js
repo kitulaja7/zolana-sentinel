@@ -75,18 +75,28 @@ export function planRelicEquips(pets, relics, minRank = 5, slots = RELIC_SLOTS) 
   const equips = [];
   const unequips = [];
   let fi = 0;
+
+  // Pass 1 — fill every EMPTY slot across ALL target pets first (strongest pet first),
+  // so no pet is left bare while another gets upgraded. This is what matters most.
   for (const pet of targets) {
-    const here = relics.filter((r) => r.equipped_on === pet.id);
-    const bySlot = new Map(here.map((r) => [r.equip_slot, r]));
+    const used = new Set(relics.filter((r) => r.equipped_on === pet.id).map((r) => r.equip_slot));
     for (const slot of slots) {
-      const cur = bySlot.get(slot);
-      if (!cur) {
-        if (fi < free.length) equips.push({ relicId: relicId(free[fi]), target: pet.id, slot });
-        fi += fi < free.length ? 1 : 0;
-      } else if (fi < free.length && relicScore(free[fi]) > relicScore(cur)) {
-        // A stronger free relic exists → swap it in (unequip the weak one first).
+      if (used.has(slot) || fi >= free.length) continue;
+      equips.push({ relicId: relicId(free[fi]), target: pet.id, slot });
+      fi += 1;
+    }
+  }
+
+  // Pass 2 — with slots filled, swap-upgrade occupied slots ONLY when a strictly higher-
+  // RARITY free relic remains (rarity, not affix score → converges, never thrashes).
+  for (const pet of targets) {
+    const here = relics.filter((r) => r.equipped_on === pet.id)
+      .sort((a, b) => relicScore(a) - relicScore(b)); // weakest equipped first
+    for (const cur of here) {
+      if (fi >= free.length) break;
+      if ((RARITY_RANK[free[fi].rarity] || 0) > (RARITY_RANK[cur.rarity] || 0)) {
         unequips.push(relicId(cur));
-        equips.push({ relicId: relicId(free[fi]), target: pet.id, slot });
+        equips.push({ relicId: relicId(free[fi]), target: pet.id, slot: cur.equip_slot });
         fi += 1;
       }
     }
@@ -827,17 +837,29 @@ export class StrategyEngine {
     if (!this.toggle('relic', config.ZOLANA_AUTO_RELIC)) return;
     if (!this.state.ready('relic')) return;
 
-    const owned = list(player?.relics);
-    // Equip/upgrade: fill every combat slot of the target pets (default Legendary-only)
-    // with the strongest relics we own.
-    if (owned.length > 0) await this.ensureRelicEquipped(player, owned);
-
-    // Recycle junk (low-rarity, unequipped) relics into relic_shard = enhance fuel.
-    await this.dismantleJunkRelics(player);
-
-    // Forge better combat relics until we own enough Epic+ to fill every target slot.
+    // Forge better combat relics first (adds to inventory), then reload and equip once on
+    // FRESH data so newly-forged relics are placed too. Fill every target pet's combat
+    // slot with the strongest relics we own (default: Legendary pets only).
     await this.craftCombatRelics(player);
+    const afterCraft = playerFrom(await this.client.loadPlayer().catch(() => null)) || player;
+    if (list(afterCraft?.relics).length > 0) await this.ensureRelicEquipped(afterCraft, list(afterCraft.relics));
+
+    // Recycle junk LAST, on FRESH data so we never dismantle a relic we just equipped —
+    // and only once every target slot is filled (while relic-short, keep low relics to
+    // fill empty slots instead of shredding them).
+    const fresh = playerFrom(await this.client.loadPlayer().catch(() => null)) || afterCraft;
+    if (!this.hasEmptyTargetSlot(fresh)) await this.dismantleJunkRelics(fresh);
     this.state.cooldown('relic', 30 * 60 * 1000);
+  }
+
+  // True while any target pet (rarity ≥ equip-min, default Legendary) still has an empty
+  // combat slot → we're relic-short and must not recycle low relics that could fill it.
+  hasEmptyTargetSlot(player) {
+    const minRank = RARITY_RANK[config.ZOLANA_RELIC_EQUIP_MIN_RARITY] || 5;
+    const relics = list(player?.relics);
+    return creatures(player)
+      .filter((c) => c.id && !c.stored && !c.listed && (RARITY_RANK[c.rarity] || 0) >= minRank)
+      .some((pet) => relics.filter((r) => r.equipped_on === pet.id).length < RELIC_SLOTS.length);
   }
 
   // Forge COMBAT relics (rarity + stat chosen) until the target pets can be fully
@@ -876,11 +898,8 @@ export class StrategyEngine {
       made += 1;
       logger.info({ rarity, stat }, 'combat relic forged');
     }
-    if (made) {
-      this.logHistory(`💍 Forged ${made} ${rarity} combat relic${made > 1 ? 's' : ''}`);
-      const fresh = playerFrom(await this.client.loadPlayer().catch(() => null));
-      if (fresh) await this.ensureRelicEquipped(fresh, list(fresh?.relics));
-    }
+    if (made) this.logHistory(`💍 Forged ${made} ${rarity} combat relic${made > 1 ? 's' : ''}`);
+    // Equipping is handled once by relicAutopilot on fresh data after this returns.
   }
 
   // Break junk (Common/Uncommon, UNEQUIPPED) relics into relic_shard so the enhance
