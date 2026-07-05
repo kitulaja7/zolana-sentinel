@@ -322,7 +322,7 @@ async function handleCommand(command, tg, engine, state) {
         return tg.notify([
           '<b>🧬 BREED</b>', '━━━━━━━━━━━━━━━━━━━━',
           `You need <b>2 idle Adult/Elder</b> creatures. Ready now: <b>${breedables.length}</b>.`,
-          adults > breedables.length ? `<i>(${adults} are Adult+ but raiding or on 1h breed-cooldown. Farming/placed ones CAN breed — they're only busy while raiding.)</i>` : '',
+          adults > breedables.length ? `<i>(${adults} are Adult+ but raiding, on the 25-min breed cooldown, or happiness &lt;50. Farming/placed ones CAN breed.)</i>` : '',
           '', '🌱 <b>How to get Adults:</b> keep creatures placed/raiding so they gain XP and evolve (Baby→Juvenile→Adult). Auto-evolve is on.',
           '💡 Offspring = <b>one rarity above the weaker parent</b> (up to Legendary), as a Mystery Egg.',
         ].filter(Boolean).join('\n'), menuMarkup);
@@ -1386,7 +1386,8 @@ const BREED_TABLE = [
   { result: 'Epic', success: 0.6, cost: 30000, timeSec: 7200 },
   { result: 'Legendary', success: 0.25, cost: 80000, timeSec: 14400 },
 ];
-const BREED_COOLDOWN_MS_UI = 60 * 60 * 1000;
+const BREED_COOLDOWN_MS_UI = 25 * 60 * 1000; // eC.cooldownSec = 1500s (RE'd) — was wrongly 60m
+const BREED_MIN_HAPPINESS = 50; // eC.minHappiness — a creature below this can't breed
 // Species → Element (from the game catalog `en(id,Name,Element,…)`). Breeding is gated by
 // element compatibility AND rarity: Legendary-tier (or higher) creatures can't breed at all.
 const CREATURE_ELEMENT = { abyssling:'Aqua',aquarine:'Aqua',aurelia:'Lux',blazecub:'Ignis',bloomara:'Flora',boulderon:'Terra',brambark:'Flora',breezekit:'Aero',chronovex:'Lux',cindermane:'Ignis',cindle:'Ignis',clovy:'Flora',cobble:'Terra',coralbite:'Aqua',coralisk:'Aqua',cosmium:'Lux',craggle:'Terra',cragroot:'Terra',crystara:'Terra',cyclonix:'Aero',darkspecter:'Void',deltarcha:'Flora',dimble:'Void',divinium:'Lux',dualuxe:'Void',duskee:'Void',eclipsyn:'Lux',elderbark:'Flora',emberle:'Ignis',emberwing:'Ignis',flicky:'Ignis',florix:'Flora',fortaran:'Terra',fuzzrock:'Terra',gaialith:'Terra',gaiamir:'Terra',galestrike:'Aero',geargrove:'Terra',geowarden:'Terra',gleamguard:'Lux',glimra:'Lux',gloopy:'Aqua',gustaria:'Aero',gusty:'Aero',hurricana:'Aero',infernohound:'Ignis',leviath:'Aqua',lotuseer:'Flora',lucentia:'Lux',lumen:'Lux',luminara:'Lux',magmarok:'Ignis',marlance:'Aqua',marshling:'Aqua',megalith:'Terra',mistweaver:'Aero',nightstrider:'Void',nihilarch:'Void',nimbu:'Aero',noctilume:'Void',novaburst:'Ignis',petalbud:'Flora',petrabloom:'Flora',poseidax:'Aqua',prismark:'Lux',pyrewing:'Ignis',pyrexis:'Ignis',pyroglide:'Aero',quartzpup:'Terra',quarzon:'Terra',scorchstorm:'Ignis',seedlup:'Flora',skydrift:'Aero',smoldra:'Ignis',solarknight:'Lux',solivanna:'Lux',solphoenix:'Ignis',splisho:'Aqua',stormray:'Aqua',stratoguard:'Aero',stratosking:'Aero',swampire:'Aqua',sylvorn:'Flora',tectodon:'Terra',tempestus:'Aqua',terragod:'Terra',terraquill:'Terra',terravine:'Flora',thornhelm:'Flora',thornmaw:'Flora',tidalord:'Aqua',tidalserp:'Aqua',tiddles:'Aqua',twilara:'Void',umbraluxis:'Void',umbrance:'Void',umbraxis:'Void',umbrite:'Void',verdania:'Flora',verdantia:'Flora',voidlord:'Void',wishling:'Lux',yggdrasoul:'Flora',zephyrion:'Aero',zephyron:'Aero' };
@@ -1408,6 +1409,7 @@ function isBreedable(c, now = Date.now()) {
   if (!['Adult', 'Elder'].includes(c.stage)) return false;
   if ((BREED_TIER[c.rarity] ?? 0) >= 4) return false; // Legendary+ can't breed
   if (c.listed || c.stored || c.run_id) return false;
+  if (Number(c.happiness ?? 100) < BREED_MIN_HAPPINESS) return false; // needs happiness ≥ 50
   const last = Date.parse(c.last_breed_time || '');
   return !Number.isFinite(last) || (now - last) >= BREED_COOLDOWN_MS_UI;
 }

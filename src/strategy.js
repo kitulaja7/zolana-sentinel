@@ -13,7 +13,7 @@ const PVP_COOLDOWN_MS = 30 * 60 * 1000;
 const SLOT_COOLDOWN_MS = 30 * 60 * 1000;
 const PRICE_COOLDOWN_MS = 10 * 60 * 1000;
 const QUESTS_COOLDOWN_MS = 15 * 60 * 1000;
-const BREED_COOLDOWN_MS = 60 * 60 * 1000;
+const BREED_COOLDOWN_MS = 25 * 60 * 1000; // eC.cooldownSec = 1500s (RE'd), not 60m
 const GACHA_COOLDOWN_MS = 30 * 60 * 1000;
 const BASIC_EGG_COST = 2500;
 const MARKET_KINDS = ['creature', 'egg', 'relic', 'material', 'gem', 'gold', 'cosmetic'];
