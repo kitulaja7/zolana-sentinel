@@ -86,6 +86,9 @@ const STAGE_CFG = {
 // → f1≈124, f2≈459, f3≈1002, f5≈2705, f10≈7534, f25≈36k (verified live). Drops
 // glimmer_dust/mana_shard/astral_core/gem_catalyst + gold.
 const GEMCRAFT_GOLD_COST = 90000; // server-validated cost of one gem_catalyst craft
+// Full gem-craft recipe (RE'd from bundle `eX`, 2026-07-05): 1 gem consumes ALL of these.
+// The old code only checked gem_catalyst+gold and would 400 when the other mats ran low.
+const GEMCRAFT_RECIPE = { glimmer_dust: 50, mana_shard: 25, astral_core: 10, gem_catalyst: 5, gold: 90000 };
 const REGION_STAMINA = [6, 8, 10, 14, 18];
 const REGION_NAMES = ['Meadow Hollows', 'Tidal Caverns', 'Ember Depths', 'Shadow Reach', 'Celestial Spire'];
 const DUNGEONS = Array.from({ length: 25 }, (_, i) => {
@@ -237,6 +240,22 @@ function dungeonRuns(state) {
 function staminaNow(state) {
   const account = actor(state);
   return Number(account.stamina ?? account.stamina_current ?? state?.stamina ?? 0);
+}
+
+// One-line raid summary for Telegram: "TITLE — N runs · floor F(–G) · power ~P".
+// entries = [{floor, power}]; falls back to the tracked party power when a run's
+// power isn't on the payload.
+function raidSummary(title, entries, stateData, noun = 'party') {
+  const n = entries.length;
+  const floors = entries.map((e) => e.floor).filter((f) => Number.isFinite(f));
+  const floorStr = floors.length
+    ? (Math.min(...floors) === Math.max(...floors) ? `${floors[0]}` : `${Math.min(...floors)}–${Math.max(...floors)}`)
+    : '?';
+  const powers = entries.map((e) => e.power).filter((p) => Number.isFinite(p) && p > 0);
+  const pw = powers.length ? Math.max(...powers) : (Number(stateData?.maxPartyPower || stateData?.partyPower) || null);
+  const pwStr = pw ? `~${Math.round(pw).toLocaleString('en-US')}` : '?';
+  const label = n === 1 ? noun : (noun === 'party' ? 'parties' : `${noun}s`);
+  return `${title} — ${n} ${label} · floor ${floorStr} · power ${pwStr}`;
 }
 
 function afkState(state) {
@@ -736,25 +755,23 @@ export class StrategyEngine {
     return 'basic';
   }
 
-  // Craft gems for free from dungeon-dropped gem_catalyst (needs 5).
+  // Craft a gem at the Forge. Recipe (RE'd `eX`): 50 glimmer + 25 mana + 10 astral +
+  // 5 gem_catalyst + 90k gold → +1 gem. Must have EVERY ingredient or the server 400s.
   async gemCraftAuto(player) {
     if (!this.toggle('gemcraft', config.ZOLANA_AUTO_GEMCRAFT)) return;
     if (!this.state.ready('gemcraft')) return;
-    const catalyst = list(player?.materials).find((m) => m.material_id === 'gem_catalyst');
-    if (!catalyst || Number(catalyst.quantity || 0) < 5) {
-      this.state.cooldown('gemcraft', 30 * 60 * 1000);
-      return;
-    }
-    // gemCraft costs 90k gold (server-validated). Never spend it below the d_gold
-    // reserve, or the +150 acct-XP/day "hold 30k gold" quest breaks next reset.
+    const have = Object.fromEntries(list(player?.materials).map((m) => [m.material_id, Number(m.quantity || 0)]));
+    const shortMat = Object.entries(GEMCRAFT_RECIPE).some(([k, need]) => k !== 'gold' && (have[k] || 0) < need);
+    if (shortMat) { this.state.cooldown('gemcraft', 30 * 60 * 1000); return; }
+    // Never spend gold below the d_gold reserve (the +150 acct-XP/day "hold 30k" quest).
     const gold = Number(actor(player).gold || 0);
-    if (gold - GEMCRAFT_GOLD_COST < config.ZOLANA_EVOLVE_GOLD_RESERVE) {
+    if (gold - GEMCRAFT_RECIPE.gold < config.ZOLANA_EVOLVE_GOLD_RESERVE) {
       this.state.cooldown('gemcraft', 30 * 60 * 1000);
       return;
     }
     const res = await this.safeAct('gemCraft', () => this.client.gemCraft());
     this.state.cooldown('gemcraft', res ? 10 * 60 * 1000 : 60 * 60 * 1000);
-    if (res) { logger.info('crafted gems from gem_catalyst'); this.logHistory('💠 Crafted gems from gem_catalyst (−90k gold)'); }
+    if (res) { logger.info('crafted gems from gem_catalyst'); this.logHistory('💠 Crafted 1 gem (−50 glimmer/25 mana/10 astral/5 catalyst/90k gold)'); }
   }
 
   // Relics: craft + equip to unlock the d_equip (+150 acct XP/day, recurring) and
@@ -1004,6 +1021,7 @@ export class StrategyEngine {
     // and ready_at (ISO). Only claim when actually ready to avoid wasted attempts.
     // Creatures on an unfinished run keep run_id set, so the party filter below
     // won't double-commit them (the server also caps concurrent runs).
+    const claimed = [];
     for (const run of dungeonRuns(player)) {
       const runId = run.id || run.runId;
       if (!runId) continue;
@@ -1011,7 +1029,14 @@ export class StrategyEngine {
       const done = ['completed', 'claimable', 'ready', 'done'].includes(run.status)
         || run.completed || run.claimable
         || (Number.isFinite(readyAt) && readyAt <= Date.now());
-      if (done) await this.safeAct(`dungeonClaim:${runId}`, () => this.client.dungeonClaim(runId));
+      if (done) {
+        const cres = await this.safeAct(`dungeonClaim:${runId}`, () => this.client.dungeonClaim(runId));
+        if (cres) claimed.push({ floor: run.dungeon_id ?? run.floor, power: Number(run.party_power) || null });
+      }
+    }
+    // Finish notif: one summary per cycle (power + floor range of the runs just cleared).
+    if (claimed.length && this.toggle('raidnotify', config.ZOLANA_RAID_NOTIFY)) {
+      this.queueNotify({ text: raidSummary('🏆 <b>RAID CLEARED</b>', claimed, this.state.data, 'run') });
     }
 
     // Stamina-cycle disabled → legacy "farm the strongest, raid with the rest".
@@ -1089,6 +1114,7 @@ export class StrategyEngine {
     };
 
     let remStamina = stamina;
+    const started = []; // {floor, power} per party fired this cycle → one START summary
     // Parties are strongest-first, so each party's power ≤ the previous one's. Seed the
     // FIRST party at the highest power ever detected (climbs the deep floors), then step
     // the estimate DOWN to each party's real power as we go — never bonsai'd to floor 1.
@@ -1103,6 +1129,7 @@ export class StrategyEngine {
       const res = await startParty(target, trio);
       if (res.ok) {
         remStamina -= target.staminaCost;
+        started.push({ floor: target.id, power: res.power || null });
         if (res.power) est = res.power; // next (weaker) party is capped by this one
         continue;
       }
@@ -1111,8 +1138,12 @@ export class StrategyEngine {
       const retry = pickFloor(affordable, est, remStamina);
       if (retry && retry.id !== target.id && this.actionsThisCycle < config.ZOLANA_MAX_ACTIONS_PER_CYCLE) {
         const r2 = await startParty(retry, trio);
-        if (r2.ok) { remStamina -= retry.staminaCost; if (r2.power) est = r2.power; }
+        if (r2.ok) { remStamina -= retry.staminaCost; started.push({ floor: retry.id, power: r2.power || null }); if (r2.power) est = r2.power; }
       }
+    }
+    // Start notif: one summary per cycle (parties · floor range · power · stamina left).
+    if (started.length && this.toggle('raidnotify', config.ZOLANA_RAID_NOTIFY)) {
+      this.queueNotify({ text: `${raidSummary('⚔️ <b>RAID START</b>', started, this.state.data)} · ⚡${remStamina} left` });
     }
     // Keep the burst going next cycle while stamina remains (no long cooldown in RAID).
   }

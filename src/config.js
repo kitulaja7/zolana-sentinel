@@ -73,6 +73,10 @@ const schema = z.object({
   // the strongest for gold) while stamina regenerates; re-raid once refilled. Kill-switch
   // — set false to fall back to the legacy "farm the strongest, raid with the rest".
   ZOLANA_RAID_STAMINA_CYCLE: z.coerce.boolean().default(true),
+  // Telegram notify on each raid burst: power + floor(s) when parties START and when
+  // runs are CLEARED. One summary per cycle (not per party) so it isn't spammy. Toggle
+  // live with /toggle raidnotify (or set false here to default off).
+  ZOLANA_RAID_NOTIFY: z.coerce.boolean().default(true),
   // Re-enter the RAID phase once stamina refills to this fraction of the observed max.
   ZOLANA_RAID_REFILL_FRAC: z.coerce.number().min(0.1).max(1).default(0.9),
   ZOLANA_AUTO_EVOLVE: z.coerce.boolean().default(true),
