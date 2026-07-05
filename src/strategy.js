@@ -1326,10 +1326,52 @@ export class StrategyEngine {
     }
     for (const id of Object.keys(prev)) {
       if (present.has(id)) continue; // already handled (sold in-place) above
-      if (soldById[id]) { notes.push(this.saleNote(soldById[id])); this.logHistory(`💰 Sold ${this.marketItemName(soldById[id])} $${soldById[id].price_usd ?? '?'}`); }
+      if (soldById[id]) {
+        notes.push(this.saleNote(soldById[id]));
+        this.logHistory(`💰 Sold ${this.marketItemName(soldById[id])} $${soldById[id].price_usd ?? '?'}`);
+      } else if (!this.wasCancelled(id)) {
+        // Listing vanished, we didn't cancel it, and the SHORT recent-sales feed no longer
+        // shows it (rotated) → it sold. Report from the stored snapshot so a fast/quiet sale
+        // is never missed (this is why a gem sale slipped through before).
+        const info = prev[id] || {};
+        const nm = info.resource || info.kind || 'item';
+        const qty = info.qty ? `×${Number(info.qty).toLocaleString('en-US')} ` : '';
+        const pr = info.price != null ? ` — <b>$${info.price}</b>` : '';
+        notes.push(`💰 <b>SOLD!</b> ${qty}${nm}${pr}`);
+        this.logHistory(`💰 Sold ${qty}${nm}${info.price != null ? ` $${info.price}` : ''}`.trim());
+      }
     }
     this.state.data.myListings = active;
     return notes;
+  }
+
+  // Track listings WE cancelled so detectSoldListings doesn't misreport a cancel as a sale.
+  noteCancelled(id) {
+    if (!id) return;
+    const c = this.state.data.cancelledListings || {};
+    c[id] = Date.now();
+    for (const [k, ts] of Object.entries(c)) if (Date.now() - ts > 6 * 60 * 60 * 1000) delete c[k];
+    this.state.data.cancelledListings = c;
+    this.state.save();
+  }
+
+  wasCancelled(id) {
+    return Boolean((this.state.data.cancelledListings || {})[id]);
+  }
+
+  // Snapshot our current active listings NOW so a freshly-created listing is tracked before
+  // it can sell (a fast sale would otherwise be missed). Merges — never drops known ids.
+  async recordActiveListings() {
+    const mine = await this.safeAct('market:mine:snapshot', () => this.client.marketMine()).catch(() => null);
+    if (!mine) return;
+    const active = { ...(this.state.data.myListings || {}) };
+    for (const l of list(mine.listings)) {
+      if (!l?.id) continue;
+      if (l.sold_at || l.buyer || (l.status && l.status !== 'active')) continue;
+      active[l.id] = { kind: l.item_kind, price: l.price_usd, resource: l.resource, qty: l.quantity };
+    }
+    this.state.data.myListings = active;
+    this.state.save();
   }
 
   // Human name for a market row, per kind (creature_id/egg_type/base_id/cosmetic_id/resource).

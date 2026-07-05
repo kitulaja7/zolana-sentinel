@@ -120,7 +120,7 @@ async function handleCommand(command, tg, engine, state) {
     if (nums.length && nums[0] > 0 && (Date.now() - ps.ts) < 5 * 60 * 1000) {
       state.data.pendingSale = null; state.save();
       const qty = ps.needsQty ? Math.min(Math.floor(nums[1] || ps.qtyDefault), ps.maxQty) : ps.qtyDefault;
-      return performList(client, tg, sellPayload(ps, nums[0], qty));
+      return performList(client, tg, sellPayload(ps, nums[0], qty), engine);
     }
   }
 
@@ -335,13 +335,16 @@ async function handleCommand(command, tg, engine, state) {
       if (ranked.length) {
         const top = ranked[0];
         const p = top.plan;
-        lines.push('', `⭐ <b>Best pair:</b> ${RARITY_EMOJI2[top.a.rarity]}${esc(top.a.creature_id)} × ${RARITY_EMOJI2[top.b.rarity]}${esc(top.b.creature_id)}`,
+        lines.push('', `⭐ <b>Best pair:</b> ${RARITY_EMOJI2[top.a.rarity]}${esc(top.a.creature_id)}(${elementOf(top.a) || '?'}) × ${RARITY_EMOJI2[top.b.rarity]}${esc(top.b.creature_id)}(${elementOf(top.b) || '?'})`,
           `   → ${RARITY_EMOJI2[p.result]} <b>${p.result}</b>${p.hybrid ? ' (hybrid)' : ''} · ${Math.round(p.success * 100)}% · ${short(p.cost)} gold`);
-        rows.push([{ text: `⭐ Best: ${top.a.creature_id}×${top.b.creature_id} → ${p.result}`.slice(0, 55), callback_data: `/bx ${top.a.id} ${top.b.id}` }]);
+        rows.push([{ text: `⭐ Best: ${top.a.creature_id}×${top.b.creature_id} → ${p.result}`.slice(0, 55), callback_data: `/bx ${bShort(top.a.id)} ${bShort(top.b.id)}` }]);
+      } else {
+        lines.push('', '⚠️ <b>No compatible pairs.</b> Elements must match:',
+          '<i>Terra↔Flora · Aqua↔Aero/Flora · Ignis↔Aero · Void↔Lux · or same element.</i>');
       }
       lines.push('', '<i>…or pick parent 1 yourself:</i>');
       for (const c of breedables.slice(0, 8)) {
-        rows.push([{ text: `${RARITY_EMOJI2[c.rarity]} ${c.creature_id} ${c.rarity}/${c.stage} L${c.level}`.slice(0, 55), callback_data: `/bp ${c.id}` }]);
+        rows.push([{ text: `${RARITY_EMOJI2[c.rarity]} ${c.creature_id}(${elementOf(c) || '?'}) ${c.stage} L${c.level}`.slice(0, 58), callback_data: `/bp ${bShort(c.id)}` }]);
       }
       rows.push([{ text: '⬅️ Back', callback_data: '/start' }]);
       return tg.notify(lines.join('\n'), { reply_markup: { inline_keyboard: rows } });
@@ -354,20 +357,22 @@ async function handleCommand(command, tg, engine, state) {
       try { player = await client.loadPlayer(); }
       catch { return tg.notify('❌ Could not load creatures. Try again.', menuMarkup); }
       const now = Date.now();
-      const a = (player.creatures || []).find((c) => c.id === idA);
+      const a = findByShort(player, idA);
       if (!a || !isBreedable(a, now)) return tg.notify('❌ That creature can\'t breed now. Open /breed.', menuMarkup);
-      const others = (player.creatures || []).filter((c) => c.id !== idA && isBreedable(c, now))
-        .sort((x, y) => creatureValue(y) - creatureValue(x));
+      // Compatible partners first (a valid breedPlan), then by value.
+      const others = (player.creatures || []).filter((c) => c.id !== a.id && isBreedable(c, now))
+        .sort((x, y) => (breedPlan(a, y) ? 1 : 0) - (breedPlan(a, x) ? 1 : 0) || creatureValue(y) - creatureValue(x));
       if (!others.length) return tg.notify('❌ No second breedable creature available. Open /breed.', menuMarkup);
       const rows = others.slice(0, 10).map((c) => {
         const p = breedPlan(a, c);
-        const tag = p ? `→ ${p.result} ${Math.round(p.success * 100)}%` : '✖ too high';
-        return [{ text: `${RARITY_EMOJI2[c.rarity]} ${c.creature_id} L${c.level} ${tag}`.slice(0, 55), callback_data: `/bx ${idA} ${c.id}` }];
+        const tag = p ? `→ ${p.result} ${Math.round(p.success * 100)}%` : `✖ ${breedReason(a, c)}`;
+        return [{ text: `${RARITY_EMOJI2[c.rarity]} ${c.creature_id}(${elementOf(c) || '?'}) L${c.level} ${tag}`.slice(0, 60), callback_data: `/bx ${idA} ${bShort(c.id)}` }];
       });
       rows.push([{ text: '⬅️ Back', callback_data: '/breed' }]);
       return tg.notify([
-        `<b>🧬 BREED — parent 1: ${RARITY_EMOJI2[a.rarity]}${esc(a.creature_id)}</b>`,
-        '━━━━━━━━━━━━━━━━━━━━', 'Pick parent 2:',
+        `<b>🧬 BREED — parent 1: ${RARITY_EMOJI2[a.rarity]}${esc(a.creature_id)} (${elementOf(a) || '?'})</b>`,
+        '━━━━━━━━━━━━━━━━━━━━',
+        'Pick parent 2 <i>(elements must match)</i>:',
       ].join('\n'), { reply_markup: { inline_keyboard: rows } });
     }
 
@@ -378,8 +383,8 @@ async function handleCommand(command, tg, engine, state) {
       try { player = await client.loadPlayer(); }
       catch { return tg.notify('❌ Could not load creatures. Try again.', menuMarkup); }
       const now = Date.now();
-      const a = (player.creatures || []).find((c) => c.id === idA);
-      const b = (player.creatures || []).find((c) => c.id === idB);
+      const a = findByShort(player, idA);
+      const b = findByShort(player, idB);
       if (!a || !b || !isBreedable(a, now) || !isBreedable(b, now)) return tg.notify('❌ One parent is no longer available. Open /breed.', menuMarkup);
       const plan = breedPlan(a, b);
       if (!plan) return tg.notify('❌ Two Legendaries can\'t breed higher (Legendary is the breed cap). Pick a different pair.', menuMarkup);
@@ -395,7 +400,7 @@ async function handleCommand(command, tg, engine, state) {
         `⏳ Hatch time: ~${mins} min`,
       ];
       const rows = [];
-      if (afford) rows.push([{ text: `♥ Breed → ${plan.result} (${Math.round(plan.success * 100)}%)`, callback_data: `/bgo ${idA} ${idB}` }]);
+      if (afford) rows.push([{ text: `♥ Breed → ${plan.result} (${Math.round(plan.success * 100)}%)`, callback_data: `/bgo ${idA} ${idB}` }]); // idA/idB already 8-char
       rows.push([{ text: '⬅️ Back', callback_data: '/breed' }, { text: '✖️ Cancel', callback_data: '/start' }]);
       return tg.notify(lines.join('\n'), { reply_markup: { inline_keyboard: rows } });
     }
@@ -407,13 +412,13 @@ async function handleCommand(command, tg, engine, state) {
       try { player = await client.loadPlayer(); }
       catch { return tg.notify('❌ Could not load creatures. Try again.', menuMarkup); }
       const now = Date.now();
-      const a = (player.creatures || []).find((c) => c.id === idA);
-      const b = (player.creatures || []).find((c) => c.id === idB);
+      const a = findByShort(player, idA);
+      const b = findByShort(player, idB);
       if (!a || !b || !isBreedable(a, now) || !isBreedable(b, now)) return tg.notify('❌ A parent is no longer available. Open /breed.', menuMarkup);
       const plan = breedPlan(a, b);
       if (!plan) return tg.notify('❌ That pair can\'t breed. Open /breed.', menuMarkup);
       await tg.notify(`🧬 Breeding <b>${esc(a.creature_id)}</b> × <b>${esc(b.creature_id)}</b>…`);
-      const res = await client.breed(idA, idB).catch((e) => ({ error: e.message }));
+      const res = await client.breed(a.id, b.id).catch((e) => ({ error: e.message }));
       if (res?.error) return tg.notify(`❌ Breed failed: <code>${esc(res.error)}</code>`, menuMarkup);
       state.data.cooldowns.breed = 0; state.count('breed'); state.save();
       const ok = res?.success !== false;
@@ -1096,6 +1101,7 @@ async function handleCommand(command, tg, engine, state) {
       const id = args[0];
       if (!id) return tg.notify('Format: <code>/cancel &lt;listingId&gt;</code>');
       const res = await client.marketCancel(id).catch((e) => ({ error: e.message }));
+      if (!res?.error) engine.noteCancelled(id); // so it isn't later misreported as a sale
       return tg.notify(res?.error ? `❌ Failed: <code>${res.error}</code>` : `❌ Listing <code>${esc(id)}</code> cancelled.`, menuMarkup);
     }
 
@@ -1223,7 +1229,7 @@ async function handleCommand(command, tg, engine, state) {
       if (!ps) return tg.notify('❌ Nothing pending. Open /sell.', menuMarkup);
       state.data.pendingSale = null; state.save();
       const total = ps.needsQty ? ps.unit * ps.qtyDefault : ps.unit;
-      return performList(client, tg, sellPayload(ps, total, ps.qtyDefault));
+      return performList(client, tg, sellPayload(ps, total, ps.qtyDefault), engine);
     }
 
     case '/leaderboard': {
@@ -1374,19 +1380,43 @@ const BREED_TABLE = [
   { result: 'Legendary', success: 0.25, cost: 80000, timeSec: 14400 },
 ];
 const BREED_COOLDOWN_MS_UI = 60 * 60 * 1000;
-// Is a creature eligible to breed right now? (Adult/Elder, idle, off cooldown.)
+// Species → Element (from the game catalog `en(id,Name,Element,…)`). Breeding is gated by
+// element compatibility AND rarity: Legendary-tier (or higher) creatures can't breed at all.
+const CREATURE_ELEMENT = { abyssling:'Aqua',aquarine:'Aqua',aurelia:'Lux',blazecub:'Ignis',bloomara:'Flora',boulderon:'Terra',brambark:'Flora',breezekit:'Aero',chronovex:'Lux',cindermane:'Ignis',cindle:'Ignis',clovy:'Flora',cobble:'Terra',coralbite:'Aqua',coralisk:'Aqua',cosmium:'Lux',craggle:'Terra',cragroot:'Terra',crystara:'Terra',cyclonix:'Aero',darkspecter:'Void',deltarcha:'Flora',dimble:'Void',divinium:'Lux',dualuxe:'Void',duskee:'Void',eclipsyn:'Lux',elderbark:'Flora',emberle:'Ignis',emberwing:'Ignis',flicky:'Ignis',florix:'Flora',fortaran:'Terra',fuzzrock:'Terra',gaialith:'Terra',gaiamir:'Terra',galestrike:'Aero',geargrove:'Terra',geowarden:'Terra',gleamguard:'Lux',glimra:'Lux',gloopy:'Aqua',gustaria:'Aero',gusty:'Aero',hurricana:'Aero',infernohound:'Ignis',leviath:'Aqua',lotuseer:'Flora',lucentia:'Lux',lumen:'Lux',luminara:'Lux',magmarok:'Ignis',marlance:'Aqua',marshling:'Aqua',megalith:'Terra',mistweaver:'Aero',nightstrider:'Void',nihilarch:'Void',nimbu:'Aero',noctilume:'Void',novaburst:'Ignis',petalbud:'Flora',petrabloom:'Flora',poseidax:'Aqua',prismark:'Lux',pyrewing:'Ignis',pyrexis:'Ignis',pyroglide:'Aero',quartzpup:'Terra',quarzon:'Terra',scorchstorm:'Ignis',seedlup:'Flora',skydrift:'Aero',smoldra:'Ignis',solarknight:'Lux',solivanna:'Lux',solphoenix:'Ignis',splisho:'Aqua',stormray:'Aqua',stratoguard:'Aero',stratosking:'Aero',swampire:'Aqua',sylvorn:'Flora',tectodon:'Terra',tempestus:'Aqua',terragod:'Terra',terraquill:'Terra',terravine:'Flora',thornhelm:'Flora',thornmaw:'Flora',tidalord:'Aqua',tidalserp:'Aqua',tiddles:'Aqua',twilara:'Void',umbraluxis:'Void',umbrance:'Void',umbraxis:'Void',umbrite:'Void',verdania:'Flora',verdantia:'Flora',voidlord:'Void',wishling:'Lux',yggdrasoul:'Flora',zephyrion:'Aero',zephyron:'Aero' };
+// eS: elements each element can breed with (symmetric, includes itself).
+const ELEMENT_COMPAT = {
+  Terra: ['Terra', 'Flora'], Aqua: ['Aqua', 'Aero', 'Flora'], Flora: ['Flora', 'Terra', 'Aqua'],
+  Ignis: ['Ignis', 'Aero'], Aero: ['Aero', 'Aqua', 'Ignis'], Void: ['Void', 'Lux'], Lux: ['Lux', 'Void'],
+};
+const elementOf = (c) => CREATURE_ELEMENT[c?.creature_id] || null;
+function elementsCompatible(a, b) {
+  const ea = elementOf(a); const eb = elementOf(b);
+  if (!ea || !eb) return true; // unknown species → let the server decide, don't block
+  return (ELEMENT_COMPAT[ea] || []).includes(eb);
+}
+// Is a creature eligible to breed right now? (Adult/Elder, NOT Legendary+, idle, off cooldown.)
 function isBreedable(c, now = Date.now()) {
   if (!['Adult', 'Elder'].includes(c.stage)) return false;
+  if ((BREED_TIER[c.rarity] ?? 0) >= 4) return false; // Legendary+ can't breed
   if (c.listed || c.stored || c.run_id || isPlacedC(c)) return false;
   const last = Date.parse(c.last_breed_time || '');
   return !Number.isFinite(last) || (now - last) >= BREED_COOLDOWN_MS_UI;
 }
-// Breed outcome plan for a pair, or null if the pair can't breed up (both Legendary+).
+// Breed outcome plan for a pair, or null if it can't breed (Legendary+ parent, or the
+// two elements aren't compatible). Offspring tier = min(parent tier)+1.
 function breedPlan(a, b) {
+  if ((BREED_TIER[a.rarity] ?? 0) >= 4 || (BREED_TIER[b.rarity] ?? 0) >= 4) return null;
+  if (!elementsCompatible(a, b)) return null;
   const parentTier = Math.min(BREED_TIER[a.rarity] ?? 0, BREED_TIER[b.rarity] ?? 0);
-  if (parentTier > 3) return null; // two Legendary+ → no higher tier exists
+  if (parentTier > 3) return null;
   const row = BREED_TABLE[parentTier];
   return { ...row, parentTier, hybrid: a.creature_id !== b.creature_id };
+}
+// Short reason a pair can't breed (for the picker); '' if it can.
+function breedReason(a, b) {
+  if ((BREED_TIER[a.rarity] ?? 0) >= 4 || (BREED_TIER[b.rarity] ?? 0) >= 4) return 'Legendary can\'t breed';
+  if (!elementsCompatible(a, b)) return `${elementOf(a) || '?'}✖${elementOf(b) || '?'}`;
+  return '';
 }
 // Rank all breedable pairs: highest offspring tier first, then success, then lowest cost.
 function bestBreedPairs(breedables) {
@@ -1401,6 +1431,14 @@ function bestBreedPairs(breedables) {
     (BREED_TIER[y.plan.result] - BREED_TIER[x.plan.result])
     || (y.plan.success - x.plan.success)
     || (x.plan.cost - y.plan.cost));
+}
+// Telegram callback_data caps at 64 bytes — two full UUIDs (77+) overflow it and the
+// whole message is rejected (BUTTON_DATA_INVALID). Breed callbacks carry 8-char id
+// prefixes instead and resolve back to the full creature here (collision-safe for a
+// per-account roster of a few dozen).
+const bShort = (id) => String(id).slice(0, 8);
+function findByShort(player, shortId) {
+  return (player.creatures || []).find((c) => bShort(c.id) === shortId);
 }
 
 // --- Evolve status (mirrors strategy.js STAGE_CFG + rarity gate) ---
@@ -1493,10 +1531,12 @@ function sellPayload(ps, priceUsd, qty) {
 }
 
 // Execute a market listing and reply with a clear confirmation.
-async function performList(client, tg, payload) {
+async function performList(client, tg, payload, engine) {
   const menuMarkup = { reply_markup: tg.mainKeyboard() };
   const res = await client.marketList(payload).catch((e) => ({ error: e.message }));
   if (res?.error) return tg.notify(`❌ List failed: <code>${esc(res.error)}</code>`, menuMarkup);
+  // Track the new listing immediately so its sale is never missed (even if it sells fast).
+  if (engine) await engine.recordActiveListings().catch(() => {});
   const qtyStr = payload.quantity ? ` ×${Number(payload.quantity).toLocaleString('en-US')}` : '';
   return tg.notify([
     '🏷️ <b>LISTED ON MARKET!</b>',
