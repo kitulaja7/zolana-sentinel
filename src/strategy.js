@@ -133,6 +133,9 @@ const STAGE_CFG = {
   Adult: { durationSec: 43200, evolveCost: 125000, skipXp: 500 },
   Elder: { durationSec: 0, evolveCost: 0, skipXp: 0 },
 };
+// v0.19: evolve GOLD cost scales with rarity (gold leg only). Higher rarity = deeper sink.
+const EVOLVE_RARITY_MULT = { Common: 1, Uncommon: 1.5, Rare: 2, Epic: 3, Legendary: 5, Mythical: 8 };
+const evolveGoldCost = (stage, rarity) => Math.round((STAGE_CFG[stage]?.evolveCost || 0) * (EVOLVE_RARITY_MULT[rarity] || 1));
 
 // Dungeon catalog (client-side; only start/claim/cancel exist). dungeonId = FLOOR
 // (1-25), grouped into 5 regions of 5 floors each. Higher floor = far more gold
@@ -694,7 +697,7 @@ export class StrategyEngine {
 
     let evolved = 0;
     for (const { c, info } of targets) {
-      const cost = info.cfg.evolveCost;
+      const cost = evolveGoldCost(info.stage, c.rarity); // v0.19 rarity-scaled gold cost
       if (gold - cost < config.ZOLANA_EVOLVE_GOLD_RESERVE) continue;
       if (cost > budget) continue;
       // Only burn creature_xp to skip the timer when the timer isn't already up.
@@ -887,7 +890,7 @@ export class StrategyEngine {
     // Upgrade the craft to Legendary when a gem_catalyst is on hand (manual-only supply).
     let rarity = config.ZOLANA_RELIC_CRAFT_RARITY;
     const catalyst = Number(list(player?.materials).find((m) => m.material_id === 'gem_catalyst')?.quantity || 0);
-    if (config.ZOLANA_RELIC_LEGENDARY_WHEN_CATALYST && catalyst >= 1 && gold >= 100000) rarity = 'Legendary';
+    if (config.ZOLANA_RELIC_LEGENDARY_WHEN_CATALYST && catalyst >= 1 && gold >= 200000) rarity = 'Legendary';
 
     const stats = config.ZOLANA_RELIC_CRAFT_STATS.split(',').map((s) => s.trim()).filter(Boolean);
     let made = 0;

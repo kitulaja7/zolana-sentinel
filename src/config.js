@@ -36,7 +36,7 @@ const schema = z.object({
   // transfer here (no server quote), so this address must be exact.
   ZOLANA_TREASURY: z.string().default('Auywa2xpfcTaBmfzNCLXSLTM5kzBh9kwjuABHY2usVNC'),
   // Stamina restore ("Stamina Elixir") cost in whole $ZOLANA → refills to full (180).
-  ZOLANA_STAMINA_ZENKO_COST: z.coerce.number().int().min(1).default(50),
+  ZOLANA_STAMINA_ZENKO_COST: z.coerce.number().int().min(1).default(150),
   // Auto-buy stamina ($ZOLANA) when drained so raids resume immediately (default OFF —
   // it spends token). Hard daily cap bounds the max spend (default 4 × 50 = 200/day).
   ZOLANA_AUTO_STAMINA: z.coerce.boolean().default(false),
@@ -102,7 +102,7 @@ const schema = z.object({
   // starve the evolve reserve / d_gold quest. Target = own this many relics (w_relics=3).
   ZOLANA_AUTO_RELIC: z.coerce.boolean().default(true),
   ZOLANA_RELIC_TARGET: z.coerce.number().int().min(0).default(3),
-  ZOLANA_RELIC_CRAFT_GOLD_FLOOR: z.coerce.number().int().min(0).default(45000),
+  ZOLANA_RELIC_CRAFT_GOLD_FLOOR: z.coerce.number().int().min(0).default(70000),
   // Combat-relic forge (POST /api/relic/craft-combat {rarity, stat}). Only equip
   // relics on creatures of this rarity+ (default Legendary → only Legendary pets
   // get relics). 3 combat slots/pet (combat_a/b/c). Craft Epic combat relics to

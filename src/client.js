@@ -467,6 +467,13 @@ export class ZolanaClient {
     return this.post('/api/relic/reroll', { relicId, mode });
   }
 
+  // v0.19 Relic Combine — fuse 5 same-class/rarity relics up a tier (bulk: up to 50 =
+  // 10 fuses). Success by source rarity: Common 70/Uncommon 50/Rare 20/Epic 10/Legendary 3%
+  // (→Mythical). A failed fuse still returns 2 relics.
+  async relicCombine(relicIds) {
+    return this.post('/api/relic/combine', { relicIds });
+  }
+
   // Mythic Altar ritual: sacrifice Elder Legendaries for a shot at a Mythic Egg.
   // offered = array of creature IDs. On win: `survivors` survive, rest die + Mythic Egg;
   // on loss: ALL offered die permanently. Server validates min/max/cost/pity.

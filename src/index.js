@@ -505,7 +505,8 @@ async function handleCommand(command, tg, engine, state) {
       ].join('\n'), {
         reply_markup: { inline_keyboard: [
           [{ text: '🔄 Auto', callback_data: '/relic' }, { text: '🔨 Forge', callback_data: '/relicforge' }],
-          [{ text: '⚒️ Enchant', callback_data: '/relicenchant' }, { text: '♻️ Recycle', callback_data: '/relicrecycle' }],
+          [{ text: '💠 Combine', callback_data: '/reliccombine' }, { text: '⚒️ Enchant', callback_data: '/relicenchant' }],
+          [{ text: '♻️ Recycle', callback_data: '/relicrecycle' }],
           [{ text: '⬅️ Back', callback_data: '/start' }],
         ] },
       });
@@ -527,9 +528,9 @@ async function handleCommand(command, tg, engine, state) {
       const rarityArg = args[0];
       // POST /api/relic/craft-combat {rarity, stat}. Costs + success odds (RE from live).
       const FORGE = {
-        Rare: { odds: 60, cost: '22 glimmer · 18 mana · 2 astral · 5k gold' },
-        Epic: { odds: 35, cost: '30 glimmer · 28 mana · 5 astral · 25k gold' },
-        Legendary: { odds: 18, cost: '40 glimmer · 40 mana · 8 astral · 1 catalyst · 100k gold' },
+        Rare: { odds: 60, cost: '22 glimmer · 18 mana · 2 astral · 10k gold' },
+        Epic: { odds: 35, cost: '30 glimmer · 28 mana · 5 astral · 50k gold' },
+        Legendary: { odds: 18, cost: '40 glimmer · 40 mana · 8 astral · 1 catalyst · 200k gold' },
       };
       if (rarityArg) {
         const rarity = rarityArg[0].toUpperCase() + rarityArg.slice(1).toLowerCase();
@@ -642,6 +643,52 @@ async function handleCommand(command, tg, engine, state) {
       ].join('\n'), {
         reply_markup: { inline_keyboard: [[{ text: `♻️ Recycle ${ids.length} now`, callback_data: '/relicrecycle GO' }], [{ text: '⬅️ Relic menu', callback_data: '/relicmenu' }]] },
       });
+    }
+
+    case '/reliccombine': {
+      // v0.19: fuse 5 same-class/rarity relics up a tier (bulk up to 50 = 10 fuses).
+      const player = await client.loadPlayer().catch(() => null);
+      if (!player) return tg.notify('❌ Could not load (game offline?). Try again.', menuMarkup);
+      const ODDS = { Common: 70, Uncommon: 50, Rare: 20, Epic: 10, Legendary: 3 };
+      const NEXT = { Common: 'Uncommon', Uncommon: 'Rare', Rare: 'Epic', Epic: 'Legendary', Legendary: 'Mythical' };
+      const rank = { Common: 1, Uncommon: 2, Rare: 3, Epic: 4, Legendary: 5, Mythical: 6 };
+      // Free relics grouped by class+rarity (fusable = groups of 5 of the same).
+      const free = (player.relics || []).filter((r) => !r.equipped_on && !r.listed && !r.stored && !r.bound && ODDS[r.rarity]);
+      const groups = {}; // `${class}|${rarity}` → relics[]
+      for (const r of free) { const k = `${r.class || 'combat'}|${r.rarity}`; (groups[k] ||= []).push(r); }
+      const rarityArg = args[0] === 'GO' ? args[1] : null;
+
+      if (args[0] === 'GO' && rarityArg) {
+        // Fuse the biggest same-class group of this rarity, up to 50 relics (10 fuses).
+        const cls = Object.keys(groups).filter((k) => k.endsWith(`|${rarityArg}`))
+          .sort((a, b) => groups[b].length - groups[a].length)[0];
+        const pool = cls ? groups[cls] : [];
+        const fuses = Math.min(10, Math.floor(pool.length / 5));
+        if (fuses < 1) return tg.notify(`💠 Need 5+ unequipped <b>${esc(rarityArg)}</b> relics of one class (have ${pool.length}).`, menuMarkup);
+        const ids = pool.slice(0, fuses * 5).map((r) => r.id || r.relic_id);
+        await tg.notify(`💠 Fusing <b>${fuses}× ${esc(rarityArg)}→${esc(NEXT[rarityArg])}</b> (${ODDS[rarityArg]}% each, ${ids.length} relics)…`);
+        const res = await client.relicCombine(ids).catch((e) => ({ error: e.message }));
+        if (res?.error) return tg.notify(`💠 Combine failed: <code>${esc(res.error)}</code>`, menuMarkup);
+        return tg.notify(`💠 <b>Combine done!</b> Fused ${ids.length} ${esc(rarityArg)} relics (${fuses} attempts @ ${ODDS[rarityArg]}%). Check /relicforge — any ${esc(NEXT[rarityArg])}+ get auto-equipped to Legendary pets. Fails returned 2 each.`, menuMarkup);
+      }
+
+      // Overview: which rarities have a fusable group of 5+.
+      const rows = [];
+      const lines = ['💠 <b>RELIC COMBINE</b> — fuse 5 same-class/rarity → 1 next tier', '━━━━━━━━━━━━━━━━━━━━'];
+      let any = false;
+      for (const rar of ['Legendary', 'Epic', 'Rare', 'Uncommon', 'Common']) {
+        const best = Object.keys(groups).filter((k) => k.endsWith(`|${rar}`)).map((k) => groups[k].length).sort((a, b) => b - a)[0] || 0;
+        const fuses = Math.min(10, Math.floor(best / 5));
+        if (best >= 5) {
+          any = true;
+          lines.push(`• <b>${rar}</b> ×${best} → <b>${fuses}</b> fuse${fuses > 1 ? 's' : ''} @ ${ODDS[rar]}% → ${NEXT[rar]}`);
+          rows.push([{ text: `💠 Fuse ${fuses}× ${rar}→${NEXT[rar]} (${ODDS[rar]}%)`, callback_data: `/reliccombine GO ${rar}` }]);
+        }
+      }
+      if (!any) lines.push('', 'No fusable group yet — need <b>5+</b> unequipped relics of the same class + rarity.');
+      lines.push('', '💡 Legendary→<b>Mythical</b> is the relic path to Tier 5. Fails return 2 relics.');
+      rows.push([{ text: '⬅️ Relic menu', callback_data: '/relicmenu' }]);
+      return tg.notify(lines.join('\n'), { reply_markup: { inline_keyboard: rows } });
     }
 
     case '/ritual': {
