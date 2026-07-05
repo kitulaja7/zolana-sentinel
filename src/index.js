@@ -529,11 +529,27 @@ async function handleCommand(command, tg, engine, state) {
       };
       if (rarityArg) {
         const rarity = rarityArg[0].toUpperCase() + rarityArg.slice(1).toLowerCase();
-        const stat = args[1] || config.ZOLANA_RELIC_CRAFT_STATS.split(',')[0];
+        // Batch mode: /relicforge <Rarity> x5 → try up to N times, stop on first success.
+        const batch = /^x(\d+)$/i.exec(args[1] || '');
+        const stat = (batch ? args[2] : args[1]) || config.ZOLANA_RELIC_CRAFT_STATS.split(',')[0];
+        const isCraftFail = (res) => res?.success === false || res?.crafted === false || /fail|refund/i.test(JSON.stringify(res));
+        if (batch) {
+          const tries = Math.min(10, Math.max(1, Number(batch[1])));
+          await tg.notify(`🔨 Forging <b>${esc(rarity)}</b> ${esc(stat)} — up to <b>${tries}×</b> (stops on success, ${FORGE[rarity]?.odds ?? '?'}% each)…`);
+          let ok = false; let used = 0;
+          for (let i = 0; i < tries; i += 1) {
+            const res = await client.craftCombatRelic(rarity, stat).catch((e) => ({ error: e.message }));
+            used += 1;
+            if (res?.error) return tg.notify(`🔨 Stopped after ${used}× — <code>${esc(res.error)}</code> (out of materials/gold?).`, menuMarkup);
+            if (!isCraftFail(res)) { ok = true; break; }
+          }
+          return tg.notify(ok
+            ? `🔨 <b>Forged ${esc(rarity)} ${esc(stat)} relic!</b> ✅ (succeeded on try ${used}/${tries}) — auto-equipped next cycle.`
+            : `🔨 <b>${esc(rarity)} ${esc(stat)}</b> — ❌ ${tries}/${tries} tries all failed (${FORGE[rarity]?.odds ?? '?'}% each, tough luck). 50% mats refunded each. Tap again to keep trying.`, menuMarkup);
+        }
         const res = await client.craftCombatRelic(rarity, stat).catch((e) => ({ error: e.message }));
         if (res?.error) return tg.notify(`🔨 Forge <b>${esc(rarity)}</b> failed: <code>${esc(res.error)}</code>`, menuMarkup);
-        const failed = res?.success === false || res?.crafted === false || /fail|refund/i.test(JSON.stringify(res));
-        return tg.notify(failed
+        return tg.notify(isCraftFail(res)
           ? `🔨 Forge <b>${esc(rarity)}</b> ${esc(stat)} — <b>❌ failed</b> (rolled ${FORGE[rarity]?.odds ?? '?'}%), 50% materials refunded. Try again.`
           : `🔨 <b>Forged ${esc(rarity)} ${esc(stat)} relic!</b> ✅ It'll be auto-equipped to a Legendary pet's slot next cycle.`, menuMarkup);
       }
@@ -551,11 +567,13 @@ async function handleCommand(command, tg, engine, state) {
         ...Object.entries(FORGE).map(([r, f]) => `• <b>${r}</b> — ${f.odds}% success · ${f.cost}`),
         '',
         `Default stat: <code>${esc(config.ZOLANA_RELIC_CRAFT_STATS.split(',')[0])}</code> · custom: <code>/relicforge Epic hp_pct</code>`,
+        '×5 = try up to 5 times, stops on the first success.',
       ];
       return tg.notify(lines.join('\n'), {
         reply_markup: {
           inline_keyboard: [
             [{ text: '🔨 Rare', callback_data: '/relicforge Rare' }, { text: '🔨 Epic', callback_data: '/relicforge Epic' }, { text: '🔨 Legendary', callback_data: '/relicforge Legendary' }],
+            [{ text: '🔨 Rare ×5', callback_data: '/relicforge Rare x5' }, { text: '🔨 Epic ×5', callback_data: '/relicforge Epic x5' }, { text: '🔨 Legend ×5', callback_data: '/relicforge Legendary x5' }],
             [{ text: '⬅️ Relic menu', callback_data: '/relicmenu' }],
           ],
         },
