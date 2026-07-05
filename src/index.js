@@ -481,12 +481,40 @@ async function handleCommand(command, tg, engine, state) {
       ].join('\n'), { reply_markup: { inline_keyboard: [[{ text: '🧬 Breed again', callback_data: '/breed' }, { text: '🐣 Hatch', callback_data: '/hatch' }]] } });
     }
 
+    case '/relicmenu': {
+      const player = await client.loadPlayer().catch(() => null);
+      const rank = { Common: 1, Uncommon: 2, Rare: 3, Epic: 4, Legendary: 5, Mythical: 6 };
+      const relics = player?.relics || [];
+      const equipped = relics.filter((r) => r.equipped_on).length;
+      const good = relics.filter((r) => (rank[r.rarity] || 0) >= 4).length;
+      const legPets = (player?.creatures || []).filter((c) => (rank[c.rarity] || 0) >= 5).length;
+      return tg.notify([
+        '💍 <b>RELIC</b>',
+        '━━━━━━━━━━━━━━━━━━━━',
+        `Owned: <b>${relics.length}</b> · Equipped: <b>${equipped}</b> · Epic+: <b>${good}</b>`,
+        `Target pets: <b>${legPets}</b> Legendary (${legPets * 3} slots)`,
+        '',
+        '🔄 <b>Auto</b> — craft Epic + equip to Legendary pets',
+        '🔨 <b>Forge</b> — craft a combat relic (pick rarity+stat)',
+        '⚒️ <b>Enchant</b> — enhance the best equipped relic',
+        '♻️ <b>Recycle</b> — bulk-sacrifice spare relics → shard',
+      ].join('\n'), {
+        reply_markup: { inline_keyboard: [
+          [{ text: '🔄 Auto', callback_data: '/relic' }, { text: '🔨 Forge', callback_data: '/relicforge' }],
+          [{ text: '⚒️ Enchant', callback_data: '/relicenchant' }, { text: '♻️ Recycle', callback_data: '/relicrecycle' }],
+          [{ text: '⬅️ Back', callback_data: '/start' }],
+        ] },
+      });
+    }
+
     case '/relic': {
       const player = await client.loadPlayer().catch(() => null);
       state.data.cooldowns.relic = 0;
       await engine.relicAutopilot(player);
       const owned = Array.isArray(player?.relics) ? player.relics.length : 0;
-      return tg.notify(`💍 Relic processed (craft+equip). Owned: <b>${owned}</b>. Unlocks d_equip (+150 XP/day) & w_relics quests.`, menuMarkup);
+      return tg.notify(`💍 Relic processed (craft+equip). Owned: <b>${owned}</b>. Unlocks d_equip (+150 XP/day) & w_relics quests.`, {
+        reply_markup: { inline_keyboard: [[{ text: '⬅️ Relic menu', callback_data: '/relicmenu' }], [{ text: '🏠 Home', callback_data: '/start' }]] },
+      });
     }
 
     case '/relicforge': {
@@ -528,7 +556,7 @@ async function handleCommand(command, tg, engine, state) {
         reply_markup: {
           inline_keyboard: [
             [{ text: '🔨 Rare', callback_data: '/relicforge Rare' }, { text: '🔨 Epic', callback_data: '/relicforge Epic' }, { text: '🔨 Legendary', callback_data: '/relicforge Legendary' }],
-            [{ text: '⬅️ Back', callback_data: '/start' }],
+            [{ text: '⬅️ Relic menu', callback_data: '/relicmenu' }],
           ],
         },
       });
@@ -559,7 +587,7 @@ async function handleCommand(command, tg, engine, state) {
         '',
         'Enhancing boosts the relic\'s stat (server-validated cost + cap).',
       ].join('\n'), {
-        reply_markup: { inline_keyboard: [[{ text: '⚒️ Enchant now', callback_data: '/relicenchant GO' }], [{ text: '⬅️ Back', callback_data: '/start' }]] },
+        reply_markup: { inline_keyboard: [[{ text: '⚒️ Enchant now', callback_data: '/relicenchant GO' }], [{ text: '⬅️ Relic menu', callback_data: '/relicmenu' }]] },
       });
     }
 
@@ -590,7 +618,7 @@ async function handleCommand(command, tg, engine, state) {
         '',
         '🛡️ Epic / Legendary / Mythical + equipped/listed relics are <b>protected</b>.',
       ].join('\n'), {
-        reply_markup: { inline_keyboard: [[{ text: `♻️ Recycle ${ids.length} now`, callback_data: '/relicrecycle GO' }], [{ text: '⬅️ Back', callback_data: '/start' }]] },
+        reply_markup: { inline_keyboard: [[{ text: `♻️ Recycle ${ids.length} now`, callback_data: '/relicrecycle GO' }], [{ text: '⬅️ Relic menu', callback_data: '/relicmenu' }]] },
       });
     }
 
@@ -973,9 +1001,14 @@ async function handleCommand(command, tg, engine, state) {
       // (95% direct to seller wallet + 5% treasury fee). Buying is NOT level-gated.
       const fmtN = (n) => Number(n || 0).toLocaleString('en-US');
       const fmtUsd = (n) => `$${Number(n || 0).toFixed(Number(n) < 0.001 ? 6 : 2)}`;
-      const KINDS = ['gold', 'gem', 'creature', 'egg', 'relic', 'cosmetic', 'material'];
-      const EMO = { gold: '💰', gem: '💎', creature: '🐾', egg: '🥚', relic: '💍', cosmetic: '🎀', material: '⛏️' };
+      // Material sub-filters (replace the generic "material" category): each maps to a
+      // specific resource so buyers can grab exactly what the forge/craft needs.
+      const MAT_SUB = { relic_shard: 'relic_shard', gem_catalyst: 'gem_catalyst', dust: 'glimmer_dust' };
+      const KINDS = ['gold', 'gem', 'creature', 'egg', 'relic', 'cosmetic', 'relic_shard', 'gem_catalyst', 'dust'];
+      const EMO = { gold: '💰', gem: '💎', creature: '🐾', egg: '🥚', relic: '💍', cosmetic: '🎀', relic_shard: '🔩', gem_catalyst: '💠', dust: '✨' };
       const kind = args[0];
+      const fetchKind = MAT_SUB[kind] ? 'material' : kind; // server kind (materials share one)
+      const wantResource = MAT_SUB[kind] || null; // sub-filter by resource within materials
 
       // No/invalid category → show the category picker.
       if (!kind || !KINDS.includes(kind)) {
@@ -993,11 +1026,13 @@ async function handleCommand(command, tg, engine, state) {
       }
 
       // Fetch live listings for the chosen kind.
-      const gm = await client.market(kind).catch((e) => ({ error: e.message }));
+      const gm = await client.market(fetchKind).catch((e) => ({ error: e.message }));
       if (gm?.error) return tg.notify(`🛒 Market fetch failed: <code>${esc(gm.error)}</code>`, menuMarkup);
       const price = Number(gm.zolanaPriceUsd || 0);
+      const resOf = (l) => l.resource || l.item?.resource || l.material_id || l.item?.material_id;
       const listings = (Array.isArray(gm.listings) ? gm.listings : [])
-        .filter((l) => l.status === 'active' && l.item_kind === kind
+        .filter((l) => l.status === 'active' && l.item_kind === fetchKind
+          && (!wantResource || resOf(l) === wantResource)
           && l.seller !== client.wallet.publicKey && Number(l.price_usd) > 0)
         .map((l) => {
           const qty = Math.max(1, Number(l.quantity) || 1);

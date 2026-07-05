@@ -129,7 +129,7 @@ export class TelegramBot {
         ],
         [
           { text: '🐾 Companion', callback_data: '/companion' },
-          { text: '💍 Relic', callback_data: '/relic' },
+          { text: '💍 Relic', callback_data: '/relicmenu' },
           { text: '🌌 Epoch', callback_data: '/epoch' },
         ],
         [
