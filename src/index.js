@@ -322,7 +322,7 @@ async function handleCommand(command, tg, engine, state) {
         return tg.notify([
           '<b>🧬 BREED</b>', '━━━━━━━━━━━━━━━━━━━━',
           `You need <b>2 idle Adult/Elder</b> creatures. Ready now: <b>${breedables.length}</b>.`,
-          adults > breedables.length ? `<i>(${adults} are Adult+ but placed/raiding/on cooldown — free them first.)</i>` : '',
+          adults > breedables.length ? `<i>(${adults} are Adult+ but raiding or on 1h breed-cooldown. Farming/placed ones CAN breed — they're only busy while raiding.)</i>` : '',
           '', '🌱 <b>How to get Adults:</b> keep creatures placed/raiding so they gain XP and evolve (Baby→Juvenile→Adult). Auto-evolve is on.',
           '💡 Offspring = <b>one rarity above the weaker parent</b> (up to Legendary), as a Mystery Egg.',
         ].filter(Boolean).join('\n'), menuMarkup);
@@ -1401,11 +1401,13 @@ function elementsCompatible(a, b) {
   if (!ea || !eb) return true; // unknown species → let the server decide, don't block
   return (ELEMENT_COMPAT[ea] || []).includes(eb);
 }
-// Is a creature eligible to breed right now? (Adult/Elder, NOT Legendary+, idle, off cooldown.)
+// Is a creature eligible to breed right now? (Adult/Elder, NOT Legendary+, off cooldown.)
+// NOTE: PLACED (farming) creatures ARE breedable — the server allows it (verified live);
+// only creatures actively RAIDING (run_id), listed, or stored are locked out.
 function isBreedable(c, now = Date.now()) {
   if (!['Adult', 'Elder'].includes(c.stage)) return false;
   if ((BREED_TIER[c.rarity] ?? 0) >= 4) return false; // Legendary+ can't breed
-  if (c.listed || c.stored || c.run_id || isPlacedC(c)) return false;
+  if (c.listed || c.stored || c.run_id) return false;
   const last = Date.parse(c.last_breed_time || '');
   return !Number.isFinite(last) || (now - last) >= BREED_COOLDOWN_MS_UI;
 }
