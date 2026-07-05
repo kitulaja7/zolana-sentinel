@@ -1724,6 +1724,7 @@ export class StrategyEngine {
       xp: account.xp,
       gold: account.gold,
       gems: account.gems,
+      bound_gems: Number(account.bound_gems || 0), // bound (e.g. holder stipend) — can't be sold
       shards: account.shards,
       zenko_balance: account.zenko_balance,
       stamina: account.stamina,

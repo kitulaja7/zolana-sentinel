@@ -699,12 +699,14 @@ async function handleCommand(command, tg, engine, state) {
 
     case '/gems': {
       // Gems hub: choose Buy (pay $ZOLANA) or Sell (list your spare gems on the market).
-      let gems = null;
-      try { gems = Number((await client.loadPlayer())?.player?.gems); } catch { /* best-effort */ }
+      let gems = null; let bound = 0;
+      try { const acc = (await client.loadPlayer())?.player; gems = Number(acc?.gems); bound = Number(acc?.bound_gems || 0); } catch { /* best-effort */ }
+      const sellable = gems != null ? Math.max(0, gems - bound) : null;
       return tg.notify([
         '<b>💎 GEMS</b>',
         '━━━━━━━━━━━━━━━━━━━━',
         gems != null ? `Your balance: <b>${esc(gems)}</b> gems` : '',
+        gems != null && bound > 0 ? `🔓 Sellable: <b>${sellable}</b>  ·  🔒 Bound: <b>${bound}</b> <i>(holder stipend — can't sell)</i>` : '',
         'Buy gems with $ZOLANA, or sell your spare gems on the market.',
       ].filter(Boolean).join('\n'), {
         reply_markup: { inline_keyboard: [
@@ -1183,9 +1185,14 @@ async function handleCommand(command, tg, engine, state) {
         unit = sellUnitFloor(summary, 'gold') * 0.97; name = 'Gold';
       } else if (kind === 'gem') {
         const gems = Number(acct.gems || 0);
-        if (gems <= 0) return tg.notify('❌ You have no gems to sell.', menuMarkup);
-        needsQty = true; maxQty = gems; qtyDefault = gems;
-        unit = sellUnitFloor(summary, 'gem') * 0.97; name = 'Gems';
+        const bound = Number(acct.bound_gems || 0);
+        const sellable = Math.max(0, gems - bound); // bound gems (holder stipend) can't be listed
+        if (sellable <= 0) return tg.notify(bound > 0
+          ? `❌ All ${gems} gems are 🔒bound (holder stipend) — none sellable.`
+          : '❌ You have no gems to sell.', menuMarkup);
+        needsQty = true; maxQty = sellable; qtyDefault = sellable;
+        unit = sellUnitFloor(summary, 'gem') * 0.97;
+        name = bound > 0 ? `Gems (${sellable} of ${gems} sellable · ${bound} 🔒bound)` : 'Gems';
       } else if (kind === 'material') {
         const held = (player.materials || []).find((m) => m.material_id === ref);
         if (!held) return tg.notify(`❌ Material <code>${esc(ref)}</code> not found.`, menuMarkup);
