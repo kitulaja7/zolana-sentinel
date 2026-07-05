@@ -140,6 +140,7 @@ export class TelegramBot {
         ],
         [
           { text: '🧬 Breed', callback_data: '/breed' },
+          { text: '🔮 Ritual', callback_data: '/ritual' },
           { text: '🐣 Hatch', callback_data: '/hatch' },
           { text: '🎒 Inventory', callback_data: '/inventory' },
         ],
@@ -251,6 +252,7 @@ export class TelegramBot {
       { command: 'dungeon', description: '🏰 Start/claim dungeon (raid)' },
       { command: 'evolve', description: '🧬 Evolve all eligible creatures' },
       { command: 'breed', description: '🧬 Breed Adult+ (higher rarity)' },
+      { command: 'ritual', description: '🔮 Mythic Altar (sacrifice Elder Legendaries)' },
       { command: 'hatch', description: '🐣 Hatch/incubate eggs (pick from list)' },
       { command: 'vault', description: '🗄️ Vault creatures to free roster room' },
       { command: 'sacrifice', description: '⚔️ Sacrifice spare Commons for XP + room' },

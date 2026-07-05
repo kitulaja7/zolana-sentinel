@@ -467,6 +467,13 @@ export class ZolanaClient {
     return this.post('/api/relic/reroll', { relicId, mode });
   }
 
+  // Mythic Altar ritual: sacrifice Elder Legendaries for a shot at a Mythic Egg.
+  // offered = array of creature IDs. On win: `survivors` survive, rest die + Mythic Egg;
+  // on loss: ALL offered die permanently. Server validates min/max/cost/pity.
+  async altarRitual(offered) {
+    return this.post('/api/altar/ritual', { offered });
+  }
+
   // Bulk-recycle many relics at once into relic_shard (permanent). Yields per rarity:
   // Uncommon/Rare 2-4, Epic 5-8 (+glimmer), Legendary 10-14 (+gem_catalyst), Mythical 0.
   async relicRecycle(relicIds) {

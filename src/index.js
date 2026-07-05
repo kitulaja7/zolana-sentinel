@@ -644,6 +644,62 @@ async function handleCommand(command, tg, engine, state) {
       });
     }
 
+    case '/ritual': {
+      // Mythic Altar — sacrifice Elder Legendaries for a shot at a Mythic Egg.
+      // Config RE'd from live: minOffer 3, maxOffer 10, 2%/elder, pity 50, 10 gems + 100k gold.
+      const A = { minOffer: 3, maxOffer: 10, perElderPct: 0.02, survivors: 2, pity: 50, gemCost: 10, goldCost: 100000 };
+      const player = await client.loadPlayer().catch(() => null);
+      if (!player) return tg.notify('❌ Could not load (game offline?). Try again.', menuMarkup);
+      const cr = player.creatures || [];
+      // Eligible = Legendary + Elder + not raiding/listed/stored/companion.
+      const companionId = (player.player || player.account || {}).equipped_creature;
+      const elders = cr.filter((c) => c.rarity === 'Legendary' && c.stage === 'Elder'
+        && !c.run_id && !c.listed && !c.stored && c.id !== companionId);
+      const gold = Number((player.player || {}).gold || 0);
+      const gems = Number((player.player || {}).gems || 0);
+      const offerN = Math.min(elders.length, A.maxOffer);
+      const chance = Math.round(offerN * A.perElderPct * 100);
+
+      if (args[0] === 'GO') {
+        if (elders.length < A.minOffer) return tg.notify(`🔮 Need at least <b>${A.minOffer}</b> Elder Legendaries — you have <b>${elders.length}</b>.`, menuMarkup);
+        if (gems < A.gemCost || gold < A.goldCost) return tg.notify(`🔮 Can't afford: need <b>${A.gemCost}</b>💎 + <b>${A.goldCost.toLocaleString()}</b>🪙 (have ${gems}💎 / ${gold.toLocaleString()}🪙).`, menuMarkup);
+        const offered = elders.slice(0, A.maxOffer).map((c) => c.id);
+        await tg.notify(`🔮 Beginning the ritual — sacrificing <b>${offered.length}</b> Elder Legendaries (${chance}% Mythic)…`);
+        const res = await client.altarRitual(offered).catch((e) => ({ error: e.message }));
+        if (res?.error) return tg.notify(`🔮 Ritual failed to start: <code>${esc(res.error)}</code>`, menuMarkup);
+        const won = res?.success === true || /ascension|mythic egg|success/i.test(JSON.stringify(res));
+        state.count('ritual'); state.save();
+        return tg.notify(won
+          ? `🔮✨ <b>ASCENSION!</b> A <b>Mythic Egg</b> forms! ${A.survivors} survived. Hatch it (~4h) → your first Mythical (Tier 5)! 🐉`
+          : `🔮💀 <b>THE RITUAL FAILS</b> — no Mythic this time, all ${offered.length} offered are lost. Pity increased. Breed + evolve more Elder Legendaries and try again.`, menuMarkup);
+      }
+
+      const gate = [];
+      if (elders.length < A.minOffer) gate.push(`⚠️ <b>Need ${A.minOffer}+ Elder Legendaries</b> — you have <b>${elders.length}</b> (breed Epics → Legendary → evolve to Elder).`);
+      if (gems < A.gemCost) gate.push(`⚠️ Need ${A.gemCost}💎 (have ${gems}).`);
+      if (gold < A.goldCost) gate.push(`⚠️ Need ${A.goldCost.toLocaleString()}🪙 (have ${gold.toLocaleString()}).`);
+      const canDo = elders.length >= A.minOffer && gems >= A.gemCost && gold >= A.goldCost;
+      const lines = [
+        '🔮 <b>THE RITUAL — Mythic Altar</b>',
+        '━━━━━━━━━━━━━━━━━━━━',
+        'Sacrifice Elder Legendaries for a shot at a <b>Mythic Egg</b> (Tier 5, the only path to Mythical).',
+        '',
+        `🐉 Eligible Elder Legendaries: <b>${elders.length}</b>${elders.length ? ' — ' + esc(elders.slice(0, A.maxOffer).map((c) => `${c.creature_id} L${c.level}`).join(', ')) : ''}`,
+        `📊 Offer <b>${A.minOffer}–${A.maxOffer}</b> · this run would offer <b>${offerN}</b> → <b>${chance}% Mythic</b> (2%/elder)`,
+        `💰 Cost: <b>${A.gemCost}</b>💎 + <b>${A.goldCost.toLocaleString()}</b>🪙 per ritual`,
+        `🎯 Pity ${A.pity} (accumulate → guaranteed) · On win: <b>${A.survivors} survive</b>`,
+        '',
+        '⚠️ <b>WARNING — PERMANENT:</b> Win = 2 survive, rest die. <b>Lose = ALL offered die forever.</b>',
+        ...(gate.length ? ['', ...gate] : ['', '✅ Ready to attempt.']),
+      ];
+      return tg.notify(lines.join('\n'), {
+        reply_markup: { inline_keyboard: [
+          ...(canDo ? [[{ text: `🔮 SACRIFICE ${offerN} & BEGIN RITUAL`, callback_data: '/ritual GO' }]] : []),
+          [{ text: '🔄 Refresh', callback_data: '/ritual' }, { text: '🏠 Home', callback_data: '/start' }],
+        ] },
+      });
+    }
+
     case '/epoch': {
       const player = await client.loadPlayer().catch(() => null);
       state.data.cooldowns.epoch = 0;
