@@ -1,6 +1,6 @@
 // =============================
-//  strategy.js – Auto‑Raid / Claim / Refill
-//  (minimum power 13 500, team up to 6, always Dungeon 11)
+//  strategy.js – Auto‑Raid / Claim / Refill
+//  (minimum power 13 500, team up to 6, always Dungeon 11)
 // =============================
 
 import { config } from './config.js';
@@ -9,26 +9,25 @@ import { logger } from './logger.js';
 // ------------------------------------------------------------------
 //  CONFIG & CONSTANTS
 // ------------------------------------------------------------------
-const MIN_RAID_POWER   = 13500;               // power yang harus dicapai
-const MAX_TEAM_SIZE   = 6;                   // tidak lebih dari 6 anggota
-const TARGET_DUNGEON  = 11;                  // selalu menyerang floor 11
-const STAMINA_COST_11 = 10;                  // stamina untuk floor 11 (region 2)
-const REFILL_ZENKO    = config.ZOLANA_STAMINA_ZENKO_COST || 10; // biaya refill full stamina
+const MIN_RAID_POWER   = 13500;
+const MAX_TEAM_SIZE    = 6;
+const TARGET_DUNGEON   = 11;
+const STAMINA_COST_11  = 10;
+const REFILL_ZENKO     = config.ZOLANA_STAMINA_ZENKO_COST || 10;
 
 // ------------------------------------------------------------------
-//  HELPERS – battle power, stamina, floor‑requirements
+//  HELPERS
 // ------------------------------------------------------------------
 function battlePower(creature) {
-  const RARITY_BATTLE = { Common: 1, Uncommon: 1.2, Rare: 1.5, Epic: 2, Legendary: 2.8, Mythical: 4 };
+  const RARITY_BATTLE  = { Common: 1, Uncommon: 1.2, Rare: 1.5, Epic: 2, Legendary: 2.8, Mythical: 4 };
   const VARIANT_BATTLE = { Normal: 1, Shiny: 1.15, Golden: 1.35, Shadow: 1.5, Rainbow: 2 };
   const STAGE_BATTLE   = { Baby: 0.5, Juvenile: 0.75, Adult: 1, Elder: 1.5 };
   return (RARITY_BATTLE[creature?.rarity]   || 1) *
          (VARIANT_BATTLE[creature?.variant] || 1) *
-         (STAGE_BATTLE[creature?.stage]    || 1) *
+         (STAGE_BATTLE[creature?.stage]     || 1) *
          (1 + 0.05 * (Math.max(1, Number(creature?.level) || 1) - 1));
 }
 
-// stamina yang ada di payload player
 function staminaNow(state) {
   const acct = state?.player?.account || state?.account || {};
   return Number(acct.stamina ?? acct.stamina_current ?? 0);
@@ -39,22 +38,32 @@ function staminaNow(state) {
 // ------------------------------------------------------------------
 export class StrategyEngine {
   constructor(client, state) {
-    this.client = client;          // API wrapper (must expose dungeonStart / dungeonClaim / staminaRestore)
-    this.state = state;            // persisten engine‑state (cooldowns, maxPower, …)
+    this.client = client;
+    this.state = state;
     this.actionsThisCycle = 0;
     this.state.data.toggles ||= {};
   }
 
   // ----------------------------------------------------------------
-  //  Simple toggle helper (kept for future config switches)
+  //  Cek mode live / dry‑run (AMAN – tidak crash jika realRun tidak ada)
   // ----------------------------------------------------------------
+  _isLiveRun() {
+    if (typeof this.client.realRun === 'function') {
+      return this.client.realRun();
+    }
+    if (typeof config.ZOLANA_DRY_RUN !== 'undefined') {
+      return !config.ZOLANA_DRY_RUN;
+    }
+    return true;
+  }
+
   toggle(key, def) {
     const stored = this.state.data.toggles?.[key];
     return stored === undefined ? def : Boolean(stored);
   }
 
   // ----------------------------------------------------------------
-  //  Cycle – dipanggil tiap loop utama
+  //  Cycle
   // ----------------------------------------------------------------
   async cycle() {
     this.actionsThisCycle = 0;
@@ -63,18 +72,14 @@ export class StrategyEngine {
     const player = await this.client.loadPlayer().catch(() => null);
     if (!player) return;
 
-    // 1️⃣ Claim raid yang sudah selesai
     await this.claimCompletedRaids(player);
-
-    // 2️⃣ Raid / Refill
     await this.raidOrRefill(player);
 
-    // persist state
     this.state.save();
   }
 
   // ----------------------------------------------------------------
-  //  CLAIM semua dungeon run yang sudah selesai
+  //  CLAIM
   // ----------------------------------------------------------------
   async claimCompletedRaids(player) {
     const claimable = [];
@@ -106,29 +111,22 @@ export class StrategyEngine {
   }
 
   // ----------------------------------------------------------------
-  //  RAID (atau REFILL bila stamina tidak cukup)
+  //  RAID / REFILL
   // ----------------------------------------------------------------
   async raidOrRefill(player) {
     const stamina = staminaNow({ player });
 
-    // ----------------------------------------------------------------
-    //  REFILL: stamina < biaya dungeon 11 → beli stamina penuh dengan Zenko
-    // ----------------------------------------------------------------
     if (stamina < STAMINA_COST_11) {
       await this._autoRefillStamina(player);
       return;
     }
 
-    // ----------------------------------------------------------------
-    //  BUILD TEAM – ambil creature terkuat dulu, tambahkan sampai
-    //  total power >= MIN_RAID_POWER atau tim sudah 6 anggota.
-    // ----------------------------------------------------------------
     const all = (player?.creatures || [])
-      .filter(c => c.id && !c.run_id)           // tidak sedang raid
+      .filter(c => c.id && !c.run_id)
       .map(c => ({ ...c, bp: battlePower(c) }))
-      .sort((a, b) => b.bp - a.bp);            // terkuat dulu
+      .sort((a, b) => b.bp - a.bp);
 
-    if (!all.length) return;                   // tidak ada creature
+    if (!all.length) return;
 
     const team = [];
     let totalPower = 0;
@@ -141,16 +139,11 @@ export class StrategyEngine {
     }
 
     if (totalPower < MIN_RAID_POWER) {
-      logger.info({ totalPower }, 'tidak ada tim yang cukup kuat (≥13 500)');
-      return;                                 // tunggu stamina / growth
+      logger.info({ totalPower }, 'tidak ada tim yang cukup kuat (≥13 500)');
+      return;
     }
 
-    // ----------------------------------------------------------------
-    //  START RAID – selalu Dungeon 11 (jika stamina cukup)
-    // ----------------------------------------------------------------
     if (stamina < STAMINA_COST_11) {
-      // sudah dicek di atas, tapi kalau stamina berkurang setelah loop
-      // (misalnya ada raid lain) tetap abort.
       await this._autoRefillStamina(player);
       return;
     }
@@ -160,13 +153,11 @@ export class StrategyEngine {
       const result = await this.client.dungeonStart(TARGET_DUNGEON, partyIds);
       this.actionsThisCycle++;
 
-      // optional: ambil power dari run yang baru dibuat
       const run = (result?.dungeonRuns || []).find(r =>
         Array.isArray(r.party) && r.party.includes(partyIds[0])
       );
       const pw = Number(run?.party_power) || null;
 
-      // update best‑ever power (untuk estimasi floor di siklus berikut)
       if (pw) {
         this.state.data.maxPartyPower = Math.max(this.state.data.maxPartyPower || 0, pw);
       }
@@ -181,17 +172,17 @@ export class StrategyEngine {
   }
 
   // ----------------------------------------------------------------
-  //  AUTO‑REFILL STAMINA (full refill) menggunakan Zenko
+  //  AUTO‑REFILL STAMINA  (diperbaiki: pakai _isLiveRun)
   // ----------------------------------------------------------------
   async _autoRefillStamina(player) {
     if (!this.toggle('autoStamina', true)) return;
-    if (!this.client.realRun()) return;                     // dry‑run disabled
+    if (!this._isLiveRun()) return;                        // ✅ FIX
     const acct = player?.account || {};
-    if (Number(acct.zenko_balance || 0) < REFILL_ZENKO) return; // tidak cukup zenko
+    if (Number(acct.zenko_balance || 0) < REFILL_ZENKO) return;
 
     const res = await this.safeAct('autoStaminaBuy', () => this.client.staminaRestore('full'));
     if (res) {
-      const newStam = staminaNow({ player: res }) || 180;   // fallback typical max
+      const newStam = staminaNow({ player: res }) || 180;
       this.state.data.staminaMax = newStam;
       this._notify(`⚡ Auto‑bought full stamina (${REFILL_ZENKO} zenko) – siap raid!`);
       logger.info({ newStamina: newStam }, 'stamina auto‑refill');
@@ -199,13 +190,13 @@ export class StrategyEngine {
   }
 
   // ----------------------------------------------------------------
-  //  SAFE wrapper – menghormati action‑budget & dry‑run mode
+  //  SAFE wrapper  (diperbaiki: pakai _isLiveRun)
   // ----------------------------------------------------------------
   async safeAct(name, fn) {
     if (this.actionsThisCycle >= (config.ZOLANA_MAX_ACTIONS_PER_CYCLE || 50)) return null;
     this.actionsThisCycle++;
 
-    if (!this.client.realRun()) {
+    if (!this._isLiveRun()) {                              // ✅ FIX
       logger.info({ action: name }, 'dry‑run – action ignored');
       return null;
     }
@@ -221,7 +212,7 @@ export class StrategyEngine {
   }
 
   // ----------------------------------------------------------------
-  //  HELPERS – formatting + notification (sync with UI of original bot)
+  //  HELPERS – formatting + notification
   // ----------------------------------------------------------------
   _raidSummary(title, entries) {
     const n = entries.length;
@@ -236,8 +227,6 @@ export class StrategyEngine {
   }
 
   _notify(text) {
-    // Bot‑original menggunakan `client.notify` untuk mengirim ke Telegram.
-    // Jika client Anda tidak punya method ini, ganti dengan cara Anda men‑push pesan.
     if (typeof this.client.notify === 'function') {
       this.client.notify({ text });
     } else {
